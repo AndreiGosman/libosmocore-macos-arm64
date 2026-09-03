@@ -1,54 +1,55 @@
 # libosmocore-macos-arm64
 
-Port de libosmocore (Osmocom Software) pentru macOS Apple Silicon (M1/M2/M3/M4),
-livrat ca set de patch-uri aplicate peste upstream. Deblocheaza compilarea si
-rularea nativa a lui **gr-gsm** si a stack-ului Osmocom pe MacBook fara VM/Docker.
+Port of libosmocore (Osmocom Software) for macOS Apple Silicon (M1/M2/M3/M4),
+delivered as a patch set applied on top of upstream. Unblocks native
+compilation and runtime of **gr-gsm** and the Osmocom stack on Macs without
+Docker or a Linux VM.
 
-Testat pe macOS Tahoe (Darwin 25.5.0), Apple Silicon M4, Homebrew 6.0.21,
+Tested on macOS Tahoe (Darwin 25.5.0), Apple Silicon M4, Homebrew 6.0.21,
 GNU Radio 3.10.12, Python 3.14, libosmocore tag `1.14.2.4-2a26b`.
 
-## Motivatie
+## Motivation
 
-libosmocore upstream (gitea.osmocom.org) este scris practic exclusiv pentru
-Linux, cu dependinte glibc-specifice: `sys/timerfd.h`, `linux/if.h`,
+Upstream libosmocore (gitea.osmocom.org) is written almost exclusively for
+Linux, with glibc-specific dependencies: `sys/timerfd.h`, `linux/if.h`,
 `linux/tcp.h`, `cpu_set_t` + `sched_setaffinity`, `setresgid/setresuid`,
 `SO_PRIORITY`, `CLOCK_REALTIME_COARSE/CLOCK_BOOTTIME`, `gettid()`, io_uring,
 netlink via libmnl, SCTP.
 
-Nu exista Homebrew formula. Nu exista tap Osmocom oficial. Nu exista fork
-public mentenat cu suport macOS ARM64.
+No Homebrew formula exists. No official Osmocom tap. No publicly maintained
+fork with macOS ARM64 support.
 
-Alternativa curenta: Docker sau UTM Ubuntu VM. Costul: fara USB passthrough
-functional pentru USRP-uri (Docker Desktop macOS), sau VM cu overhead
-semnificativ pentru sesiuni interactive de captura.
+The current alternative is Docker or a UTM Ubuntu VM. Cost: no functional
+USB passthrough for USRPs under Docker Desktop macOS, or the VM overhead
+during interactive capture sessions.
 
-Portul acesta rezolva compilarea si rularea nativa cu 21 patch-uri, dintre
-care principalul e un `darwin_stubs.c` care exporta simbolurile publice ale
-fisierelor Linux-only wrap-uite in `#ifdef __linux__`.
+This port solves native compilation and runtime with 21 patches. The main
+one is a `darwin_stubs.c` that exports the public symbols of the Linux-only
+files wrapped in `#ifdef __linux__`.
 
-## Ce functioneaza
+## What works
 
-- `libosmocore.dylib` si toate submodulele (`libosmovty`, `libosmocodec`,
-  `libosmogsm`, `libosmocoding`, `libosmoisdn`) compilate si link-abile
-- Modulul Python `gnuradio.gsm` importabil in Python 3.14 din venv-ul
-  gnuradio Homebrew
-- `grgsm_decode` functional pentru decodare offline din capturi `.cfile`
-- Namespace `gnuradio` unit prin `extend_path` intre prefix-ul local si
-  Homebrew (blocks, uhd, qtgui accesibile impreuna cu gsm)
+- `libosmocore.dylib` and all submodules (`libosmovty`, `libosmocodec`,
+  `libosmogsm`, `libosmocoding`, `libosmoisdn`) compile and link
+- Python module `gnuradio.gsm` importable in Python 3.14 from the
+  Homebrew gnuradio venv
+- `grgsm_decode` works for offline decoding of `.cfile` captures
+- `gnuradio` namespace unified via `extend_path` between the local prefix
+  and Homebrew (blocks, uhd, qtgui accessible alongside gsm)
 
-## Ce NU functioneaza
+## What doesn't work yet
 
-- `grgsm_scanner` cade la `import osmosdr` (gr-osmosdr necesar separat)
-- `grgsm_livemon` / `grgsm_livemon_headless` necesita compilare manuala
-  `.grc` post-install si patchuri suplimentare la flowgraph
-- `grgsm_capture` neinstalat (nu exista in apps/ pentru versiunea forkului)
-- Functiile Linux-only sunt no-op la runtime (CPU affinity VTY, Frame Relay
-  transport GPRS, TUN device, TCP stats via timerfd, netlink). Nu afecteaza
-  decodarea GSM passiva; pot afecta functionalitati Osmocom avansate
+- `grgsm_scanner` fails at `import osmosdr` (gr-osmosdr needs a separate port)
+- `grgsm_livemon` / `grgsm_livemon_headless` need manual `.grc` compilation
+  post-install plus additional patches to the flowgraph
+- `grgsm_capture` not installed (missing from `apps/` in this fork's version)
+- Linux-only functions are no-op at runtime (CPU affinity VTY, Frame Relay
+  GPRS transport, TUN device, TCP stats via timerfd, netlink). This does not
+  affect passive GSM decoding; it may affect advanced Osmocom features
 
-## Prerechizite
+## Prerequisites
 
-macOS pe Apple Silicon (M1/M2/M3/M4). Rularea pe Intel Mac neconfirmata.
+macOS on Apple Silicon (M1/M2/M3/M4). Untested on Intel Macs.
 
 Homebrew:
 ```
@@ -56,74 +57,74 @@ brew install cmake boost swig log4cpp cppunit pkg-config git \
              autoconf automake libtool talloc gnutls
 ```
 
-Optional pentru gr-gsm ulterior: `brew install gnuradio pybind11`, plus
-`pygccxml` in venv-ul gnuradio.
+Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
+`pygccxml` in the gnuradio venv.
 
-## Utilizare
+## Usage
 
 ```bash
-git clone https://github.com/<username>/libosmocore-macos-arm64.git
+git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
 cd libosmocore-macos-arm64
 ./install.sh --prefix=$HOME/sdr-lab/local
 ```
 
-Instaleaza libosmocore + submodulele in prefix-ul specificat (default
-`$HOME/sdr-lab/local`), fara sa polueze `/opt/homebrew` sau sistemul.
+Installs libosmocore + submodules into the specified prefix (default
+`$HOME/sdr-lab/local`), without touching `/opt/homebrew` or the system.
 
-Pentru dezinstalare: `rm -rf $HOME/sdr-lab/local`.
+Uninstall: `rm -rf $HOME/sdr-lab/local`.
 
-Pentru build gr-gsm complet peste asta (fork bkerker/gr-gsm), vezi scriptul
-`install_gr_gsm.sh` complet in [sdr-lab tools](https://github.com/<username>/sdr-lab-tools).
+For a full gr-gsm build on top of this (bkerler/gr-gsm fork), see the
+companion `install_gr_gsm.sh` script (not part of this repository).
 
-## Lista patch-urilor
+## Patch list
 
-Toate in `patches/` ca fisiere text aplicabile cu `patch -p1` sau
-manual. `install.sh` le aplica automat.
+All patches live in `patches/` as text files applicable with `patch -p1`
+or manually. `install.sh` applies them automatically.
 
 **0001-configure-disable-linux-only-features.patch**
-Adauga `--disable-uring --disable-libmnl --disable-libsctp` la invocarea
-configure. io_uring, netlink si SCTP nu exista pe Darwin.
+Adds `--disable-uring --disable-libmnl --disable-libsctp` to the configure
+invocation. io_uring, netlink, and SCTP don't exist on Darwin.
 
 **0002-exec.c-setresgid-setresuid-to-Darwin.patch**
-Substituie apeluri `setresgid(a,a,a)` cu `setregid(a,a)` si `setresuid(a,a,a)`
-cu `setreuid(a,a)` in `src/core/exec.c`. Semantic echivalent pentru
-use-case-ul concret (toate cele 3 argumente sunt aceeasi valoare).
+Replaces `setresgid(a,a,a)` calls with `setregid(a,a)` and `setresuid(a,a,a)`
+with `setreuid(a,a)` in `src/core/exec.c`. Semantically equivalent for the
+specific use case (all three arguments are the same value).
 
 **0003-wrap-linux-only-sources.patch**
-Wrap in `#ifdef __linux__ ... #endif` pentru fisiere care includ header-e
-Linux-only sau folosesc API-uri Linux:
+Wraps in `#ifdef __linux__ ... #endif` for files that include Linux-only
+headers or use Linux-only APIs:
 - `src/vty/cpu_sched_vty.c` (`cpu_set_t`, `sched_setaffinity`)
 - `src/core/netdev.c` (`linux/if.h`)
-- `src/core/serial.c` (Linux ioctl-uri)
+- `src/core/serial.c` (Linux ioctls)
 - `src/core/stats_tcp.c` (`linux/tcp.h`)
 - `src/core/tun.c` (`linux/if_tun.h`)
 - `src/gb/gprs_ns2_fr.c` (`linux/if.h`, Frame Relay socket family)
 
 **0004-add-darwin-stubs.patch**
-Adauga `src/core/darwin_stubs.c` la libosmocore_la_SOURCES in
-`src/core/Makefile.am`. Fisierul `darwin_stubs.c` (copy in `src/` din acest
-repo) exporta stub-uri no-op pentru simbolurile publice din fisierele
-wrap-uite: `osmo_tcp_stats_config`, `osmo_stats_tcp_*`, `osmo_timerfd_*`,
+Adds `src/core/darwin_stubs.c` to `libosmocore_la_SOURCES` in
+`src/core/Makefile.am`. The `darwin_stubs.c` file (from this repo's `src/`)
+exports no-op stubs for the public symbols of wrapped files:
+`osmo_tcp_stats_config`, `osmo_stats_tcp_*`, `osmo_timerfd_*`,
 `osmo_tundev_*`.
 
 **0005-darwin-compat-header.patch**
-Adauga `darwin_compat.h` la root si il include prin CFLAGS `-include`.
-Defineste:
-- `SO_PRIORITY=999` (Linux socket priority option, no-op pe Darwin)
+Adds `darwin_compat.h` at the root and includes it via CFLAGS `-include`.
+Defines:
+- `SO_PRIORITY=999` (Linux socket priority option, no-op on Darwin)
 - `CLOCK_REALTIME_COARSE=100`, `CLOCK_MONOTONIC_COARSE=101`,
-  `CLOCK_BOOTTIME=102` (dummy IDs care nu se ciocnesc cu enum-ul Darwin
-  `_clock_id`)
-- macro `gettid()` -> `getpid()` (semantic degradat multi-thread, ok pentru
-  logging)
+  `CLOCK_BOOTTIME=102` (dummy IDs that don't collide with the Darwin
+  `_clock_id` enum)
+- `gettid()` macro → `getpid()` (degraded multi-thread semantics, fine
+  for logging)
 
 **0006-LDFLAGS-dynamic-lookup-at-make.patch**
-`LDFLAGS="-Wl,-undefined,dynamic_lookup"` aplicat DOAR la faza `make`,
-NU la `configure`. Aplicat la configure ar cauza fals pozitive pentru
-detectia `gettid`/`setns`/`unshare`.
+`LDFLAGS="-Wl,-undefined,dynamic_lookup"` applied only at `make` time,
+NOT at `configure`. Applying it at configure would cause false positives
+in `gettid`/`setns`/`unshare` detection.
 
-## Testare instalare
+## Verifying the install
 
-Dupa `./install.sh`:
+After `./install.sh`:
 
 ```bash
 export PKG_CONFIG_PATH=$HOME/sdr-lab/local/lib/pkgconfig:$PKG_CONFIG_PATH
@@ -132,64 +133,52 @@ pkg-config --exists libosmogsm && echo "libosmogsm OK"
 
 # Symbol check
 nm -gU $HOME/sdr-lab/local/lib/libosmocore.dylib | grep osmo_tcp_stats_config
-# ar trebui sa arate _osmo_tcp_stats_config exportat
+# should show _osmo_tcp_stats_config exported
 
-# Runtime check (nu ar trebui sa afiseze eroare)
+# Dynamic linker check
 otool -L $HOME/sdr-lab/local/lib/libosmocore.dylib
 ```
 
-## Limitari cunoscute
+## Known limitations
 
-**Timing precision**: `CLOCK_MONOTONIC_COARSE` si `CLOCK_BOOTTIME` intorc
-EINVAL la runtime (nu exista pe Darwin). Codul osmocom are fallback la
-`CLOCK_MONOTONIC` standard prin `try/if` in `timer_clockgettime.c`, deci
-efectul e degradare minora la resolutia timerelor, nu crash.
+**Timing precision**: `CLOCK_MONOTONIC_COARSE` and `CLOCK_BOOTTIME` return
+EINVAL at runtime (they don't exist on Darwin). Osmocom code has a fallback
+to standard `CLOCK_MONOTONIC` via `try/if` in `timer_clockgettime.c`, so the
+effect is minor timer resolution degradation, not a crash.
 
-**CPU affinity**: `osmo-cpu-sched` VTY commands nu au efect (functiile sunt
-stub). Impact: nu poti seta afinitate CPU per thread la runtime prin CLI.
-Nu afecteaza rularea passive RX.
+**CPU affinity**: `osmo-cpu-sched` VTY commands have no effect (functions
+are stubs). Impact: no CPU affinity control per thread at runtime via CLI.
+Does not affect passive RX runs.
 
-**Frame Relay GPRS**: `gprs_ns2_fr` wrap-uit. Impact: nu poti face
-transport GPRS peste Frame Relay (rar folosit oricum, TCP/UDP transport
-functioneaza normal).
+**Frame Relay GPRS**: `gprs_ns2_fr` wrapped out. Impact: no GPRS transport
+over Frame Relay (rarely used anyway; TCP/UDP transport works normally).
 
-**TUN device**: `osmo_tundev_*` sunt no-op. Impact: nu poti crea TUN
-interface din libosmocore direct pe macOS. Pentru majoritatea use-cases
-osmocom (BTS, MSC, HLR) nu e necesar.
+**TUN device**: `osmo_tundev_*` are no-op. Impact: no TUN interface creation
+from libosmocore directly on macOS. Not needed for most Osmocom use cases
+(BTS, MSC, HLR).
 
-**libosmocore statistics via TCP**: `osmo_stats_tcp_*` sunt no-op.
-Impact: nu poti raporta stats via `stats_tcp`. Alternativa: stats prin
-GSMTAP UDP sau prin logging.
+**libosmocore TCP statistics**: `osmo_stats_tcp_*` are no-op. Impact: no
+stats reporting via `stats_tcp`. Alternatives: stats via GSMTAP UDP or
+via logging.
 
-## Ce ar face nativ mai bine
+## What would be better upstream
 
-Idealul ar fi ca upstream libosmocore sa accepte patch-urile ca
-`#ifdef __linux__` conditionale in loc sa wrap-uiesc integral fisiere.
-Ma astept ca upstream sa fie reticent, dat fiind ca portabilitatea nu
-e in scope-ul lor declarat.
+Ideally, upstream libosmocore would accept the patches as `#ifdef __linux__`
+inline conditionals rather than wrapping whole files. I expect upstream to
+be reluctant, since portability is not in their declared scope.
 
-Alternativ, un fork mentenat activ (nu doar acest snapshot) ar aduce
-Osmocom on macOS la nivelul pe care il are Kismet, aircrack-ng si stack-ul
-WiFi.
+Alternatively, an actively maintained fork (not just this snapshot) would
+bring Osmocom on macOS to the level WiFi tooling already has (Kismet,
+aircrack-ng, etc.).
 
 ## License
 
-GPLv2+ (mostenire din libosmocore original). Patch-urile individuale
-sunt sub aceeasi licenta.
+GPLv2+ (inherited from upstream libosmocore). Individual patches are under
+the same license.
 
 ## Credits
 
-Portul realizat de Andrei Gosman in cadrul proiectului personal SDR Lab,
-in perioada septembrie 2026, cu ajutorul lui Claude (Anthropic) pentru
-diagnostic si iterare pe patch-uri. Multe multumiri.
+Ported by Andrei Gosman, 2026. Patchset iterated with Claude (Anthropic).
 
-Upstream libosmocore: comunitatea Osmocom (https://osmocom.org).
+Upstream libosmocore: the Osmocom community (https://osmocom.org).
 Upstream gr-gsm fork: bkerler (https://github.com/bkerler/gr-gsm).
-
-## Vezi si
-
-- [sdr-lab-tools](https://github.com/<username>/sdr-lab-tools) - Scripturile
-  complete Sirio scanner + install gr-gsm + analiza spectrala
-- [gr-gsm bkerler fork](https://github.com/bkerler/gr-gsm) - Fork gr-gsm
-  compatibil GNU Radio 3.10+
-- [Osmocom project](https://osmocom.org)
