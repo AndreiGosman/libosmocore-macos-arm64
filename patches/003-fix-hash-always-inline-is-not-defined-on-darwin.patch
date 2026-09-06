@@ -1,0 +1,32 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Tue, 08 Sep 2026 10:00:00 +0300
+Subject: [PATCH 003] fix: hash.h uses __always_inline, which Darwin does not define
+
+hash.h declares hash_64_generic() with __always_inline. That spelling comes
+from the Linux kernel sources this file was imported from. On glibc it
+happens to keep working because <sys/cdefs.h> defines __always_inline;
+Darwin's does not, so the declaration fails to parse. The reported
+"call to undeclared function 'hash_64_generic'" further down is a
+consequence, not a separate problem.
+
+Upstream already made exactly this change in log2.h in commit 7fc88b32,
+"log2.h: Avoid redefining __always_inline", and hash.h was missed. Use the
+same spelling here.
+
+This is not Darwin specific and is worth sending upstream: any libc whose
+cdefs.h lacks the macro hits it. It went unnoticed because libosmo-sigtran
+is the first consumer to include hashtable.h.
+---
+diff --git a/include/osmocom/core/hash.h b/include/osmocom/core/hash.h
+index b45c0361..a4351057 100644
+--- a/include/osmocom/core/hash.h
++++ b/include/osmocom/core/hash.h
+@@ -73,7 +73,7 @@ static inline uint32_t hash_32_generic(uint32_t val, unsigned int bits)
+ #ifndef HAVE_ARCH_HASH_64
+ #define hash_64 hash_64_generic
+ #endif
+-static __always_inline uint32_t hash_64_generic(uint64_t val, unsigned int bits)
++static inline __attribute__((always_inline)) uint32_t hash_64_generic(uint64_t val, unsigned int bits)
+ {
+ #if BITS_PER_LONG == 64
+ 	/* 64x64-bit multiply is efficient on all 64-bit processors */
