@@ -21,14 +21,19 @@ set -o pipefail
 
 # ---- config ----
 LIBOSMO_REPO="https://gitea.osmocom.org/osmocom/libosmocore.git"
-LIBOSMO_TAG="1.14.2.4-2a26b"   # the tested tag; HEAD is at your own risk
+# The commit this port is built and tested against. 1.14.2.4-2a26b is the
+# string git-version-gen produces for it, not a ref: git checkout cannot
+# resolve it, and with pipefail that aborted the script on a fresh clone.
+LIBOSMO_REF="2a26b47cb6c6590fde8cb953f1caeaf498d5568b"   # 1.14.2 plus 4 commits
+
 PREFIX="${HOME}/sdr-lab/local"
 
 # parse args
 for arg in "$@"; do
     case $arg in
         --prefix=*) PREFIX="${arg#*=}" ;;
-        --tag=*)    LIBOSMO_TAG="${arg#*=}" ;;
+        --ref=*)    LIBOSMO_REF="${arg#*=}" ;;
+        --tag=*)    LIBOSMO_REF="${arg#*=}" ;;
         --help|-h)
             grep '^#' "$0" | head -20 | cut -c3-
             exit 0
@@ -73,11 +78,11 @@ if [ -d libosmocore/.git ]; then
     log "2. The libosmocore repository is present, running git fetch"
     cd libosmocore && git fetch --tags && cd ..
 else
-log "2. Cloning libosmocore $LIBOSMO_TAG"
+log "2. Cloning libosmocore $LIBOSMO_REF"
     git clone "$LIBOSMO_REPO" libosmocore
 fi
 cd libosmocore
-git checkout "$LIBOSMO_TAG" 2>&1 | tail -2
+git checkout --detach "$LIBOSMO_REF"
 
 # ---- 3. Apply Darwin patches ----
 log "3. Applying the Darwin changes"
