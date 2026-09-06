@@ -187,7 +187,7 @@ echo ""
 log "9. Checking the stub symbols (darwin_stubs.c)"
 for sym in osmo_tcp_stats_config osmo_stats_tcp_set_interval osmo_timerfd_disable osmo_tundev_alloc; do
     if nm -gU "$PREFIX/lib/libosmocore.dylib" 2>/dev/null | grep -q "_$sym\$"; then
-        echo "  ok: $sym exportat"
+        echo "  ok: $sym exported"
     else
         echo "  MISSING: $sym (the stubs are incomplete)"
     fi
