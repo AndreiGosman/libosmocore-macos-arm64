@@ -1,0 +1,54 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Tue, 08 Sep 2026 10:00:00 +0300
+Subject: [PATCH 001] fix: getaddrinfo rejects SOCK_STREAM with IPPROTO_SCTP on Darwin
+
+Darwin has no kernel SCTP, and its getaddrinfo() refuses the hint pair
+SOCK_STREAM plus IPPROTO_SCTP with EAI_BADHINTS. This holds for every host
+and every address family, verified for "::", "0.0.0.0" and "127.0.0.1"
+under AF_UNSPEC and AF_INET alike, while the same call with protocol 0 or
+IPPROTO_TCP succeeds.
+
+addrinfo_helper() passes the caller's protocol straight into the hints, so
+on Darwin every SCTP server failed before it reached bind(). In osmo-stp
+this appeared as "Unable to bind xUA server to IP(s)" with the M3UA
+listener never coming up.
+
+Only the name and the port need resolving here, and the caller reads the
+protocol back out of the results to create the socket. Ask for an
+unspecified protocol and restore IPPROTO_SCTP in the returned list, which
+is the shape the file already uses to work around the glibc SOCK_RAW and
+IPPROTO_GRE problem a few lines above.
+---
+diff --git a/src/core/socket.c b/src/core/socket.c
+index 3a2d7b75..a9fb86c7 100644
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -84,6 +84,17 @@ static struct addrinfo *addrinfo_helper(uint16_t family, uint16_t type, uint8_t
+ 	if (passive)
+ 		hints.ai_flags |= AI_PASSIVE;
+ 
++#ifdef __APPLE__
++	/* Darwin has no kernel SCTP, and its getaddrinfo() rejects the pair
++	 * SOCK_STREAM plus IPPROTO_SCTP with EAI_BADHINTS for every host and
++	 * family. Only the name and the port need resolving here, so ask for
++	 * an unspecified protocol and put IPPROTO_SCTP back into the results
++	 * below. This mirrors the SOCK_RAW workaround above. */
++	bool darwin_sctp_hint = (hints.ai_protocol == IPPROTO_SCTP);
++	if (darwin_sctp_hint)
++		hints.ai_protocol = 0;
++#endif
++
+ 	rc = getaddrinfo(host, portbuf, &hints, &result);
+ 	if (rc != 0) {
+ 		LOGP(DLGLOBAL, LOGL_ERROR, "getaddrinfo(%s, %u) failed: %s\n",
+@@ -97,6 +108,10 @@ static struct addrinfo *addrinfo_helper(uint16_t family, uint16_t type, uint8_t
+ 			rp->ai_socktype = SOCK_RAW;
+ 			rp->ai_protocol = proto;
+ 		}
++#ifdef __APPLE__
++		if (darwin_sctp_hint)
++			rp->ai_protocol = IPPROTO_SCTP;
++#endif
+ 	}
+ 
+ 	return result;
