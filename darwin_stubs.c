@@ -1,17 +1,18 @@
 /*
- * libosmocore-macos-arm64: stub-uri no-op pentru simboluri publice exportate
- * din fisiere Linux-only wrap-uite in #ifdef __linux__.
+ * libosmocore-macos-arm64: no-op stubs for the public symbols exported by
+ * the Linux-only source files that this port wraps in #ifdef __linux__.
  *
- * Consumatori (libosmovty, bindings Python, gr-gsm) cheama aceste functii/
- * citesc aceste variabile prin symbol name. Fara stub-uri, dyld esueaza
- * la runtime cu "symbol not found in flat namespace" la incarcarea
- * modulului Python `gnuradio.gsm`.
+ * Consumers (libosmovty, the Python bindings, gr-gsm) call these functions
+ * and read these variables by symbol name. Without the stubs, dyld fails at
+ * runtime with "symbol not found in flat namespace" when the Python module
+ * gnuradio.gsm is loaded.
  *
- * Semantic: functiile intorc -1 sau 0 (fail benign), variabilele sunt
- * zero-initialized. Consumatorii ar trebui sa gestioneze fallback.
+ * Semantics: the functions return -1 or 0, a benign failure, and the
+ * variables are zero initialised. Consumers are expected to handle the
+ * fallback.
  *
- * Se compileaza in libosmocore.la prin adaugare in src/core/Makefile.am
- * la libosmocore_la_SOURCES.
+ * This file is compiled into libosmocore.la by adding it to
+ * libosmocore_la_SOURCES in src/core/Makefile.am.
  */
 
 #ifdef __APPLE__
@@ -19,15 +20,15 @@
 #include <stddef.h>
 
 /* ============================================================
- * Din src/core/stats_tcp.c - Linux-only (needs sys/timerfd.h)
+ * From src/core/stats_tcp.c, Linux only (needs sys/timerfd.h)
  * ============================================================ */
 
-/* Variabila globala config, tipul real e struct osmo_stats_tcp_entry_cfg
- * dar consumatorii doar citesc/scriu campuri. 256 bytes aliniata acopera
- * orice struct rezonabila. */
+/* Global configuration variable. The real type is
+ * struct osmo_stats_tcp_entry_cfg, but consumers only read and write its
+ * fields. An aligned 256 byte object covers any reasonable structure. */
 char osmo_tcp_stats_config[256] __attribute__((aligned(16))) = {0};
 
-struct osmo_fd; /* forward decl - definitia reala in osmocom/core/select.h */
+struct osmo_fd; /* forward declaration, the real one is in osmocom/core/select.h */
 
 int osmo_stats_tcp_osmo_fd_register(struct osmo_fd *fd) {
     (void)fd;
@@ -58,8 +59,8 @@ void osmo_stats_tcp_stop(void) {}
 
 
 /* ============================================================
- * Din src/core/select.c pentru timerfd - Linux-only sys/timerfd.h
- * Chemate de stats.c, rate_ctr.c prin osmo_fd polling
+ * From src/core/select.c, the timerfd family, Linux only sys/timerfd.h.
+ * Called by stats.c and rate_ctr.c through osmo_fd polling.
  * ============================================================ */
 
 struct timespec;
@@ -85,7 +86,7 @@ int osmo_timerfd_setup(struct osmo_fd *ofd,
 
 
 /* ============================================================
- * Din src/core/tun.c - Linux-only (linux/if_tun.h)
+ * From src/core/tun.c, Linux only (linux/if_tun.h)
  * ============================================================ */
 
 struct osmo_tundev {
@@ -112,9 +113,9 @@ int osmo_tundev_close(struct osmo_tundev *tun) {
 }
 
 
-/* La nevoie, adauga stubs pentru simboluri suplimentare aici pe masura
- * ce dyld semnaleaza "symbol not found in flat namespace" la runtime.
- * Simbolurile listate mai sus au fost identificate iterativ prin rulare
- * import Python cu observarea erorii de dyld si adaugare pas cu pas. */
+/* Add stubs for further symbols here as dyld reports "symbol not found in
+ * flat namespace" at runtime. The symbols above were found one at a time,
+ * by running the Python import, reading the dyld error and adding the
+ * missing symbol. */
 
 #endif /* __APPLE__ */
