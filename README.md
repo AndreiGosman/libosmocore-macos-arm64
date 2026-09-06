@@ -76,6 +76,53 @@ Uninstall: `rm -rf $HOME/sdr-lab/local`.
 For a full gr-gsm build on top of this (bkerler/gr-gsm fork), see the
 companion `install_gr_gsm.sh` script (not part of this repository).
 
+## Building with SCTP support
+
+`install.sh` configures with `--disable-libsctp`. That is the right choice
+for gr-gsm and for passive scanning, which never open an SCTP socket, and it
+was the only choice available when this port was made: macOS has no kernel
+SCTP.
+
+It is the wrong choice for the rest of the Osmocom stack. `--disable-libsctp`
+compiles out `osmo_sock_init2_multiaddr`, `osmo_sock_init2_multiaddr2`,
+`osmo_sock_multiaddr_add_local_addr` and `osmo_sock_multiaddr_del_local_addr`
+while `osmocom/core/socket.h` goes on declaring all four. Nothing warns you.
+The build above libosmocore fails instead, at a configure check that looks
+like a fault in the component being built: libosmo-netif tests for
+`osmo_sock_init2_multiaddr` and reports that libosmocore was built without
+libsctp support.
+
+[libsctp-compat](https://github.com/AndreiGosman/libsctp-compat-macos-arm64)
+v0.2.0 or later supplies the missing `netinet/sctp.h` and `libsctp`. Install
+it first, then rebuild libosmocore against it:
+
+```bash
+pkg-config --modversion libsctp     # expect 0.2.0 or later
+
+cd build/libosmocore                # where install.sh put the source
+./configure --prefix=$HOME/sdr-lab/local     --disable-doxygen --disable-pcsc --disable-systemd-logging     --disable-uring --disable-libmnl --enable-libsctp     CFLAGS="-include $PWD/darwin_compat.h"
+make -j$(sysctl -n hw.ncpu) LDFLAGS="-Wl,-undefined,dynamic_lookup"
+make install
+```
+
+Keep the `LDFLAGS`. It is not incidental to the SCTP build, it is what the
+whole port needs: `libosmogb` refers to the `gprs_ns2_fr_*` symbols that the
+Frame Relay patch removes, and to `bssgp_prim_cb`, which an application
+supplies. `libosmocodec` needs it for an unrelated reason, an upstream one:
+it calls `_talloc_free` and `_talloc_zero` but has no `$(TALLOC_LIBS)` in its
+`LIBADD`, where ctrl, gb, gsm and isdn all have it. Linux does not notice,
+because the symbols resolve transitively through `libosmocore.so`.
+
+Check that the rebuild did what you wanted:
+
+```bash
+nm -gU $HOME/sdr-lab/local/lib/libosmocore.dylib | grep -c multiaddr   # expect 7
+otool -L $HOME/sdr-lab/local/lib/libosmocore.dylib | grep sctp
+```
+
+Adding SCTP only adds symbols, so anything already built against this
+libosmocore keeps working. gr-gsm was re-checked after the rebuild.
+
 ## Patch list
 
 All patches live in `patches/` as text files applicable with `patch -p1`
