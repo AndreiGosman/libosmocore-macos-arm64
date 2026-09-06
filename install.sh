@@ -119,6 +119,25 @@ if [ ! -f darwin_compat.h ]; then
     cp "$REPO_DIR/darwin_compat.h" darwin_compat.h
 fi
 
+# 3f. Numbered patch series against the upstream sources
+PATCHES_DIR="$REPO_DIR/patches"
+if [ -d "$PATCHES_DIR" ]; then
+    for patch_file in "$PATCHES_DIR"/*.patch; do
+        [ -f "$patch_file" ] || continue
+        if patch -p1 --forward --silent < "$patch_file" >/dev/null 2>&1; then
+            echo "  patch: $(basename "$patch_file")"
+        elif patch -p1 --reverse --dry-run --silent < "$patch_file" >/dev/null 2>&1; then
+            # --forward refuses to reapply, but still reports failure. A clean
+            # reverse dry-run means the change is already in the tree, which is
+            # what makes re-running this script safe.
+            echo "  patch: $(basename "$patch_file") (already applied)"
+        else
+            err "patch $(basename "$patch_file") did not apply"
+            exit 1
+        fi
+    done
+fi
+
 # ---- 4. Autoreconf ----
 log "4. autoreconf -fi"
 autoreconf -fi
