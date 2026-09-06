@@ -1,0 +1,36 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Tue, 08 Sep 2026 10:00:00 +0300
+Subject: [PATCH 004] fix: stats_tcp.h does not declare struct osmo_fd
+
+The prototypes in stats_tcp.h take a struct osmo_fd pointer, but the header
+never declares the type and does not include select.h. A translation unit
+that includes stats_tcp.h without select.h therefore gives struct osmo_fd
+function prototype scope, and any definition of those functions in that unit
+has a different, incompatible type. Clang reports the -Wvisibility warning
+and then rejects the definitions outright.
+
+Every in-tree caller happens to include select.h first, which is why this
+never showed up. It surfaced while building the Darwin stub file for the
+same functions.
+
+Add the forward declaration to the header rather than requiring each
+includer to get the order right. Also worth sending upstream, since nothing
+here is platform specific.
+---
+diff --git a/include/osmocom/core/stats_tcp.h b/include/osmocom/core/stats_tcp.h
+index 9bc7111a..759dc3b8 100644
+--- a/include/osmocom/core/stats_tcp.h
++++ b/include/osmocom/core/stats_tcp.h
+@@ -11,6 +11,12 @@ struct osmo_tcp_stats_config {
+ };
+ extern struct osmo_tcp_stats_config *osmo_tcp_stats_config;
+ 
++/* The prototypes below name struct osmo_fd without declaring it. A translation
++ * unit that includes this header on its own therefore gives the type function
++ * prototype scope, and a later definition of one of these functions is a
++ * different type. Declare it here instead of relying on the includer. */
++struct osmo_fd;
++
+ int osmo_stats_tcp_osmo_fd_register(const struct osmo_fd *fd, const char *name);
+ int osmo_stats_tcp_osmo_fd_unregister(const struct osmo_fd *fd);
+ int osmo_stats_tcp_set_interval(int interval);
