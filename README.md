@@ -123,38 +123,44 @@ otool -L $HOME/sdr-lab/local/lib/libosmocore.dylib | grep sctp
 Adding SCTP only adds symbols, so anything already built against this
 libosmocore keeps working. gr-gsm was re-checked after the rebuild.
 
-## Patch list
+## Changes applied by install.sh
 
-All patches live in `patches/` as text files applicable with `patch -p1`
-or manually. `install.sh` applies them automatically.
+The port changes the upstream tree in two ways. The six items below are
+in-place edits that `install.sh` performs itself, because each is a
+substitution or a file copy rather than a diff. The numbered series in
+`patches/` follows them, and is described in the next section.
 
-**0001-configure-disable-linux-only-features.patch**
+**0001-configure-disable-linux-only-features**
 Adds `--disable-uring --disable-libmnl --disable-libsctp` to the configure
 invocation. io_uring, netlink, and SCTP don't exist on Darwin.
 
-**0002-exec.c-setresgid-setresuid-to-Darwin.patch**
+**0002-exec.c-setresgid-setresuid-to-Darwin**
 Replaces `setresgid(a,a,a)` calls with `setregid(a,a)` and `setresuid(a,a,a)`
 with `setreuid(a,a)` in `src/core/exec.c`. Semantically equivalent for the
 specific use case (all three arguments are the same value).
 
-**0003-wrap-linux-only-sources.patch**
+**0003-wrap-linux-only-sources**
 Wraps in `#ifdef __linux__ ... #endif` for files that include Linux-only
 headers or use Linux-only APIs:
-- `src/vty/cpu_sched_vty.c` (`cpu_set_t`, `sched_setaffinity`)
 - `src/core/netdev.c` (`linux/if.h`)
 - `src/core/serial.c` (Linux ioctls)
 - `src/core/stats_tcp.c` (`linux/tcp.h`)
 - `src/core/tun.c` (`linux/if_tun.h`)
 - `src/gb/gprs_ns2_fr.c` (`linux/if.h`, Frame Relay socket family)
 
-**0004-add-darwin-stubs.patch**
+`src/vty/cpu_sched_vty.c` used to be wrapped here too. It is handled by
+`patches/005` instead, because wrapping it removes a public function that
+every Osmocom daemon calls, so the file needs a replacement definition and
+not only a guard.
+
+**0004-add-darwin-stubs**
 Adds `src/core/darwin_stubs.c` to `libosmocore_la_SOURCES` in
-`src/core/Makefile.am`. The `darwin_stubs.c` file (from this repo's `src/`)
+`src/core/Makefile.am`. The `darwin_stubs.c` file, which lives at the root of this repository,
 exports no-op stubs for the public symbols of wrapped files:
 `osmo_tcp_stats_config`, `osmo_stats_tcp_*`, `osmo_timerfd_*`,
 `osmo_tundev_*`.
 
-**0005-darwin-compat-header.patch**
+**0005-darwin-compat-header**
 Adds `darwin_compat.h` at the root and includes it via CFLAGS `-include`.
 Defines:
 - `SO_PRIORITY=999` (Linux socket priority option, no-op on Darwin)
@@ -164,10 +170,33 @@ Defines:
 - `gettid()` macro → `getpid()` (degraded multi-thread semantics, fine
   for logging)
 
-**0006-LDFLAGS-dynamic-lookup-at-make.patch**
+**0006-LDFLAGS-dynamic-lookup-at-make**
 `LDFLAGS="-Wl,-undefined,dynamic_lookup"` applied only at `make` time,
 NOT at `configure`. Applying it at configure would cause false positives
 in `gettid`/`setns`/`unshare` detection.
+
+## Patches applied
+
+The numbered series in `patches/` is applied by `install.sh` after the
+in-place changes above and before `autoreconf`. Each file carries a
+`git format-patch` compatible header describing the problem and the reasoning.
+An already applied patch is skipped, so re-running `install.sh` over an
+existing build tree is safe.
+
+| Patch | Upstream file | Darwin issue | Fix |
+|-------|---------------|--------------|-----|
+| 001 | `src/core/socket.c` | `getaddrinfo()` answers `EAI_BADHINTS` for `SOCK_STREAM` with `IPPROTO_SCTP`, for every host and family, so no SCTP server reaches `bind()` | Resolve with an unspecified protocol, restore `IPPROTO_SCTP` in the results, as the file already does for glibc and `SOCK_RAW` |
+| 002 | `include/osmocom/core/log2.h` | The bundled `static inline fls(unsigned int)` follows Darwin's non-static `fls(int)` from `<strings.h>`; glibc has no `fls()` | Use the libc `fls()` on Darwin, keep the bundled one elsewhere. Semantics checked to be identical |
+| 003 | `include/osmocom/core/hash.h` | `__always_inline` is defined by glibc's `<sys/cdefs.h>` but not Darwin's, so the declaration fails to parse | Spell it `__attribute__((always_inline))`, the change upstream already made in `log2.h` |
+| 004 | `include/osmocom/core/stats_tcp.h` | The prototypes name `struct osmo_fd` without declaring it, giving it prototype scope and breaking any definition in the same unit | Forward declare the type in the header |
+| 005 | `src/vty/cpu_sched_vty.c` | Guarding the file for Linux removes `osmo_cpu_sched_vty_init()`, which every daemon calls, so linking fails | Guard it and add an `#else` no-op initialiser, leaving the `cpu-sched` node absent |
+
+Patches 003 and 004 are not Darwin specific. Both are worth sending upstream.
+
+Patch 001 and the `osmo_tcp_stats_config` fix in `darwin_stubs.c` are what
+make a daemon such as `osmo-stp` start at all: before them it died with
+SIGSEGV inside `osmo_stats_init()`, and once past that it could not bind its
+SCTP listener.
 
 ## Verifying the install
 
