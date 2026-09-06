@@ -1,0 +1,45 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Tue, 08 Sep 2026 10:00:00 +0300
+Subject: [PATCH 002] fix: log2.h fls() conflicts with the BSD fls() on Darwin
+
+log2.h defines a static inline fls(unsigned int). Darwin declares fls(int)
+in <strings.h> as a BSD extension, so the static definition follows a
+non-static declaration of the same name and the compiler rejects it. glibc
+has no fls() at all, which is why Linux never sees this.
+
+The BSD function has the same semantics: it returns the one-based position
+of the most significant set bit, and 0 for an argument of 0. Verified
+against the bundled implementation over a dense sweep of the low million
+values, every one and two bit pattern, and the sign boundary cases where an
+unsigned argument converts to a negative int. No differences.
+
+Keep the bundled version everywhere else and use the libc one on Darwin.
+This header exists to serve hash.h, which is the only consumer in tree.
+---
+diff --git a/include/osmocom/core/log2.h b/include/osmocom/core/log2.h
+index 8c65768f..c775df89 100644
+--- a/include/osmocom/core/log2.h
++++ b/include/osmocom/core/log2.h
+@@ -18,6 +18,14 @@
+  * This is defined the same way as ffs.
+  * Note fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
+  */
++/* Darwin declares the BSD extension int fls(int) in <strings.h>. Defining a
++ * static one here makes the compiler reject the static declaration that
++ * follows a non-static one. glibc has no fls(), so Linux is unaffected. The
++ * BSD fls() has the same semantics: it returns the 1 based position of the
++ * most significant set bit, and 0 for an argument of 0. */
++#ifdef __APPLE__
++#include <strings.h>
++#else
+ static inline __attribute__((always_inline)) int fls(unsigned int x)
+ {
+ 	int r = 32;
+@@ -46,6 +54,7 @@ static inline __attribute__((always_inline)) int fls(unsigned int x)
+ 	}
+ 	return r;
+ }
++#endif /* !__APPLE__ */
+ 
+ /**
+  * fls64 - find last set bit in a 64-bit word
