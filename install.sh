@@ -89,9 +89,13 @@ if ! grep -q "setregid.*pw_gid, pw->pw_gid)" src/core/exec.c; then
 fi
 
 # 3b. Wrap Linux-only sources
+# src/vty/cpu_sched_vty.c used to be wrapped here as well. It is handled by
+# patches/005 instead, because wrapping it removes the public
+# osmo_cpu_sched_vty_init() that every Osmocom daemon calls, so the file needs
+# a replacement definition and not only a guard.
 echo "  change: wrap the Linux-only files in #ifdef __linux__"
 WRAPPED=0
-for f in src/vty/cpu_sched_vty.c $(grep -l '^#include <linux/' src/*/*.c 2>/dev/null); do
+for f in $(grep -l '^#include <linux/' src/*/*.c 2>/dev/null); do
     if [ -f "$f" ] && ! head -1 "$f" | grep -q '^#ifdef __linux__'; then
         { echo '#ifdef __linux__'; cat "$f"; echo '#endif'; } > "$f.new"
         mv "$f.new" "$f"
