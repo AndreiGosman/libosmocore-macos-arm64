@@ -1,0 +1,38 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Sun, 7 Sep 2026 11:05:00 +0100
+Subject: [PATCH 006] fix: osmo_sock_local_ip() connects its dummy socket to port 0
+
+osmo_sock_local_ip() finds the local address for a remote by connecting a
+UDP socket to that remote and reading the local side back with
+getsockname(). It connects to port 0. Linux accepts that, Darwin and the
+BSDs do not: connect() fails with EADDRNOTAVAIL and the function returns
+-EINVAL for every remote.
+
+Two consumers break on Darwin as a result. libosmo-mgcp-client cannot
+determine its local address and fails to build any MGCP message that
+carries SDP ("Could not determine local IP-Address!"), and the mgcp_client
+test then dereferences the message it did not get. In osmo-mgw itself,
+mgcp_network.c uses the same call to pick the local RTP address when none
+is configured.
+
+No packet is ever sent on the dummy socket, so the remote port is
+irrelevant to the answer. Use 9 (discard), which every kernel accepts.
+Behaviour on Linux is unchanged.
+---
+diff --git a/src/core/socket.c b/src/core/socket.c
+index a9fb86c..d6d538a 100644
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -2481,8 +2481,10 @@ int osmo_sock_local_ip(char *local_ip, const char *remote_ip)
+ 
+ 	/* Connect a dummy socket to trick the kernel into determining the
+ 	 * ip-address of the interface that would be used if we would send
+-	 * out an actual packet */
+-	sfd = osmo_sock_init2(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, remote_ip, 0, OSMO_SOCK_F_CONNECT);
++	 * out an actual packet. No packet is sent, so the remote port does
++	 * not matter, but it must not be 0: Linux accepts a UDP connect() to
++	 * port 0, while Darwin and the BSDs reject it with EADDRNOTAVAIL. */
++	sfd = osmo_sock_init2(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, remote_ip, 9, OSMO_SOCK_F_CONNECT);
+ 	if (sfd < 0)
+ 		return -EINVAL;
+ 

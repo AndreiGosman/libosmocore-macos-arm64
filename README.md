@@ -64,9 +64,10 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.1 or master. Tag v0.2.0 is functional but disables
-> the stats subsystem; v0.2.1 emulates timerfd for full stats support. v0.1.0
-> remains deprecated (null dereference at daemon startup).
+> **Note**: Use tag v0.2.2 or master. v0.2.1 emulates timerfd for full stats
+> support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
+> libosmo-mgcp-client need. Tag v0.2.0 is functional but disables the stats
+> subsystem. v0.1.0 remains deprecated (null dereference at daemon startup).
 
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
@@ -278,8 +279,10 @@ existing build tree is safe.
 | 003 | `include/osmocom/core/hash.h` | `__always_inline` is defined by glibc's `<sys/cdefs.h>` but not Darwin's, so the declaration fails to parse | Spell it `__attribute__((always_inline))`, the change upstream already made in `log2.h` |
 | 004 | `include/osmocom/core/stats_tcp.h` | The prototypes name `struct osmo_fd` without declaring it, giving it prototype scope and breaking any definition in the same unit | Forward declare the type in the header |
 | 005 | `src/vty/cpu_sched_vty.c` | Guarding the file for Linux removes `osmo_cpu_sched_vty_init()`, which every daemon calls, so linking fails | Guard it and add an `#else` no-op initialiser, leaving the `cpu-sched` node absent |
+| 006 | `src/core/socket.c` | `osmo_sock_local_ip()` connects its dummy UDP socket to port 0 to learn the local address; Darwin and the BSDs reject that with `EADDRNOTAVAIL`, so the function fails for every remote. libosmo-mgcp-client then cannot build any MGCP message with SDP, and osmo-mgw cannot pick a local RTP address | Connect to port 9 instead. No packet is sent, so the port is irrelevant to the answer; Linux behaviour is unchanged (since v0.2.2) |
 
-Patches 003 and 004 are not Darwin specific. Both are worth sending upstream.
+Patches 003, 004 and 006 are not Darwin specific. All three are worth
+sending upstream.
 
 Patch 001 and the `osmo_tcp_stats_config` fix in `darwin_stubs.c` are what
 make a daemon such as `osmo-stp` start at all: before them it died with
