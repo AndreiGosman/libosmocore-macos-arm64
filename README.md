@@ -36,6 +36,8 @@ files wrapped in `#ifdef __linux__`.
 - `grgsm_decode` works for offline decoding of `.cfile` captures
 - `gnuradio` namespace unified via `extend_path` between the local prefix
   and Homebrew (blocks, uhd, qtgui accessible alongside gsm)
+- The stats and rate counter timers of every Osmocom daemon run, on top of
+  the timerfd emulation described below (since v0.2.1)
 
 ## What doesn't work yet
 
@@ -44,7 +46,7 @@ files wrapped in `#ifdef __linux__`.
   post-install plus additional patches to the flowgraph
 - `grgsm_capture` not installed (missing from `apps/` in this fork's version)
 - Linux-only functions are no-op at runtime (CPU affinity VTY, Frame Relay
-  GPRS transport, TUN device, TCP stats via timerfd, netlink). This does not
+  GPRS transport, TUN device, TCP socket statistics, netlink). This does not
   affect passive GSM decoding; it may affect advanced Osmocom features
 
 ## Prerequisites
@@ -62,8 +64,9 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.0 or master. Tag v0.1.0 is deprecated due to a null
-> dereference bug at daemon startup.
+> **Note**: Use tag v0.2.1 or master. Tag v0.2.0 is functional but disables
+> the stats subsystem; v0.2.1 emulates timerfd for full stats support. v0.1.0
+> remains deprecated (null dereference at daemon startup).
 
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
@@ -103,10 +106,20 @@ it first, then rebuild libosmocore against it:
 pkg-config --modversion libsctp     # expect 0.2.0 or later
 
 cd build/libosmocore                # where install.sh put the source
-./configure --prefix=$HOME/sdr-lab/local     --disable-doxygen --disable-pcsc --disable-systemd-logging     --disable-uring --disable-libmnl --enable-libsctp     CFLAGS="-include $PWD/darwin_compat.h"
+./configure --prefix=$HOME/sdr-lab/local \
+    --disable-doxygen --disable-pcsc --disable-systemd-logging \
+    --disable-uring --disable-libmnl --enable-libsctp \
+    CFLAGS="-include $PWD/darwin_compat.h -I$PWD/include"
 make -j$(sysctl -n hw.ncpu) LDFLAGS="-Wl,-undefined,dynamic_lookup"
 make install
 ```
+
+Keep the whole `CFLAGS`. The `-I$PWD/include` is what lets configure find
+`sys/timerfd.h` and define `HAVE_SYS_TIMERFD_H`. Without it the build still
+succeeds, but `src/core/select.c` drops its `osmo_timerfd_*` wrappers, the
+stats timers are gone again, and every daemon fails to link or to start
+with an undefined `_osmo_timerfd_setup`. The symbol check at the end of
+`install.sh` reports exactly that case.
 
 Keep the `LDFLAGS`. It is not incidental to the SCTP build, it is what the
 whole port needs: `libosmogb` refers to the `gprs_ns2_fr_*` symbols that the
@@ -128,7 +141,7 @@ libosmocore keeps working. gr-gsm was re-checked after the rebuild.
 
 ## Changes applied by install.sh
 
-The port changes the upstream tree in two ways. The six items below are
+The port changes the upstream tree in two ways. The seven items below are
 in-place edits that `install.sh` performs itself, because each is a
 substitution or a file copy rather than a diff. The numbered series in
 `patches/` follows them, and is described in the next section.
@@ -160,8 +173,9 @@ not only a guard.
 Adds `src/core/darwin_stubs.c` to `libosmocore_la_SOURCES` in
 `src/core/Makefile.am`. The `darwin_stubs.c` file, which lives at the root of this repository,
 exports no-op stubs for the public symbols of wrapped files:
-`osmo_tcp_stats_config`, `osmo_stats_tcp_*`, `osmo_timerfd_*`,
-`osmo_tundev_*`.
+`osmo_tcp_stats_config`, `osmo_stats_tcp_*`, `osmo_tundev_*`. Up to v0.2.0
+it also stubbed `osmo_timerfd_*`; those are now the upstream functions, see
+item 0007.
 
 **0005-darwin-compat-header**
 Adds `darwin_compat.h` at the root and includes it via CFLAGS `-include`.
@@ -177,6 +191,77 @@ Defines:
 `LDFLAGS="-Wl,-undefined,dynamic_lookup"` applied only at `make` time,
 NOT at `configure`. Applying it at configure would cause false positives
 in `gettid`/`setns`/`unshare` detection.
+
+**0007-timerfd-emulation** (since v0.2.1)
+Copies `darwin_timerfd.c` to `src/core/` and adds it to
+`libosmocore_la_SOURCES`, copies `darwin_timerfd.h` to
+`include/sys/timerfd.h`, and adds `-I$PWD/include` to the configure
+`CFLAGS` so that the check for `sys/timerfd.h` succeeds. After `make
+install` the header is copied to `$PREFIX/include/sys/timerfd.h` as well.
+Details in the next section.
+
+## timerfd emulation
+
+Up to v0.2.0, `osmo_timerfd_setup()`, `osmo_timerfd_schedule()` and
+`osmo_timerfd_disable()` were stubs returning -1. Every daemon then logged
+two `stats.c` errors at startup and ran with its stats and rate counter
+timers dead: no periodic flush, so statsd, Prometheus exporters and CTRL
+polling saw nothing. The osmo-hlr `db_upgrade` test failed on exactly those
+two lines.
+
+Linux `timerfd_create()` returns a descriptor that becomes readable when the
+timer expires; `read()` gives the number of expirations as a `uint64_t`, and
+`stats.c` asserts that it reads exactly eight bytes. Darwin has no timerfd.
+Its timing primitive is kqueue `EVFILT_TIMER`, but a kqueue descriptor only
+reports readiness and cannot be read. `darwin_timerfd.c` therefore builds
+each timer from three parts: a pipe, whose read end is the descriptor the
+caller gets; a kqueue with an `EVFILT_TIMER`; and a worker thread that
+waits on the kqueue and writes the expiration count into the pipe. The
+result works with `select()`, `poll()`, `read()` and plain `close()`, so the
+upstream `select.c` wrappers compile and run unchanged. The three functions
+are exported from `libosmocore.dylib` under their Linux names; nothing on
+Darwin defines them, so there is no collision.
+
+What is emulated: `CLOCK_MONOTONIC` and `CLOCK_REALTIME`; `TFD_NONBLOCK`
+and `TFD_CLOEXEC`; `it_value` as first expiration and `it_interval` as
+period, kept separate (the first shot is a one-shot kevent, the worker then
+arms a repeating one, which does not drift); disarm with a zero `it_value`;
+one-shot with a zero `it_interval`; coalescing of missed expirations into
+the count, which is what the "We missed N timers" notice in `stats.c`
+reads; `TFD_TIMER_ABSTIME` by conversion to a delay at `settime()`;
+`timerfd_gettime()` and the `old_value` argument; `close()`, detected
+through `EV_EOF` on the write end; and `fork()`, through an `atfork` child
+handler that rebuilds the kqueue and the worker, because neither survives a
+fork on Darwin while the pipe does. The last point is what keeps the stats
+timers alive after `osmo_daemonize()`.
+
+What is not emulated: `TFD_TIMER_CANCEL_ON_SET` returns `EINVAL` (Darwin
+has no notification for wall clock jumps; Osmocom does not use it). A
+`settime()` does not discard an expiration already written to the pipe but
+not yet read, where Linux resets the count; the effect is at most one extra
+tick after a reschedule. An absolute `CLOCK_REALTIME` timer is converted
+once and does not follow later clock changes. A read end inherited by
+another process delays the release of the worker until that process closes
+it too.
+
+Two test programs are in `tests/`. `darwin_timerfd_test.c` exercises the
+raw API from a `select()` loop: 100 ms periodic ticks, distinct first
+expiration, coalescing, `gettime`, disarm, one-shot, close detection and
+fork. `darwin_timerfd_osmo_fd_test.c` goes through `osmo_timerfd_setup()`
+and `osmo_select_main()`, the path the daemons use.
+
+```bash
+cc tests/darwin_timerfd_test.c -o /tmp/tfd $(pkg-config --cflags --libs libosmocore)
+DYLD_LIBRARY_PATH=$HOME/sdr-lab/local/lib /tmp/tfd          # expect PASSED (0 failures)
+
+cc tests/darwin_timerfd_osmo_fd_test.c -o /tmp/tfd2 $(pkg-config --cflags --libs libosmocore talloc)
+DYLD_LIBRARY_PATH=$HOME/sdr-lab/local/lib /tmp/tfd2         # expect 6 callbacks in 2.6 s
+```
+
+Verified end to end with the osmo-hlr testsuite (`db_upgrade` passes, 8 of
+9 with one skipped), with a `stats reporter statsd` sending one datagram per
+second, and with osmo-hlr started with `-D`, where the daemon child keeps
+its worker thread and kqueue.
 
 ## Patches applied
 
@@ -213,6 +298,8 @@ pkg-config --exists libosmogsm && echo "libosmogsm OK"
 # Symbol check
 nm -gU $HOME/sdr-lab/local/lib/libosmocore.dylib | grep osmo_tcp_stats_config
 # should show _osmo_tcp_stats_config exported
+nm -gU $HOME/sdr-lab/local/lib/libosmocore.dylib | grep -c timerfd
+# should be 6: timerfd_create/settime/gettime and osmo_timerfd_setup/schedule/disable
 
 # Dynamic linker check
 otool -L $HOME/sdr-lab/local/lib/libosmocore.dylib

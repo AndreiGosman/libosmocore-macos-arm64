@@ -81,38 +81,14 @@ int osmo_stats_tcp_set_interval(int interval)
  * invented entries to the export table of this port.
  */
 
-/* ============================================================
- * From src/core/select.c, the timerfd family, Linux only sys/timerfd.h.
- * Called by stats.c and rate_ctr.c through osmo_fd polling.
- * ============================================================ */
-
-struct timespec;
-
-int osmo_timerfd_disable(struct osmo_fd *ofd)
-{
-	(void)ofd;
-	return -1;
-}
-
-int osmo_timerfd_schedule(struct osmo_fd *ofd,
-			  const struct timespec *first,
-			  const struct timespec *interval)
-{
-	(void)ofd;
-	(void)first;
-	(void)interval;
-	return -1;
-}
-
-int osmo_timerfd_setup(struct osmo_fd *ofd,
-		       int (*cb)(struct osmo_fd *, unsigned int),
-		       void *data)
-{
-	(void)ofd;
-	(void)cb;
-	(void)data;
-	return -1;
-}
+/*
+ * osmo_timerfd_disable, osmo_timerfd_schedule and osmo_timerfd_setup from
+ * src/core/select.c used to be stubbed here, returning -1. That disabled the
+ * stats and rate counter timers of every daemon at startup, with two
+ * stats.c error lines as the only symptom. Since v0.2.1 the upstream
+ * functions compile as they are, on top of the timerfd emulation in
+ * darwin_timerfd.c and the sys/timerfd.h header that install.sh provides.
+ */
 
 /* ============================================================
  * From src/core/tun.c, Linux only (linux/if_tun.h)

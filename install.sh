@@ -110,23 +110,35 @@ for f in $(grep -l '^#include <linux/' src/*/*.c 2>/dev/null); do
 done
 [ "$WRAPPED" -eq 0 ] && echo "    (already applied)"
 
-# 3c. darwin_stubs.c
-if [ ! -f src/core/darwin_stubs.c ]; then
-    echo "  change: add src/core/darwin_stubs.c"
-    cp "$REPO_DIR/darwin_stubs.c" src/core/darwin_stubs.c
-fi
+# 3c. The Darwin sources and headers. Copied whenever they differ, so that
+# re-running the script over an existing tree picks up an updated file.
+copy_if_changed() {
+    if ! cmp -s "$1" "$2"; then
+        echo "  change: $3"
+        mkdir -p "$(dirname "$2")"
+        cp "$1" "$2"
+    fi
+}
+copy_if_changed "$REPO_DIR/darwin_stubs.c"   src/core/darwin_stubs.c   "add src/core/darwin_stubs.c"
+copy_if_changed "$REPO_DIR/darwin_timerfd.c" src/core/darwin_timerfd.c "add src/core/darwin_timerfd.c"
+# sys/timerfd.h has to be visible at configure time: the check for it
+# defines HAVE_SYS_TIMERFD_H, which is what compiles the timerfd wrappers in
+# src/core/select.c. include/ is already on AM_CPPFLAGS; configure gets the
+# same directory through CFLAGS below.
+copy_if_changed "$REPO_DIR/darwin_timerfd.h" include/sys/timerfd.h     "add include/sys/timerfd.h"
 
-# 3d. Adaug darwin_stubs.c la Makefile.am
+# 3d. Add the Darwin sources to Makefile.am
 if ! grep -q 'darwin_stubs\.c' src/core/Makefile.am; then
     echo "  change: add darwin_stubs.c to src/core/Makefile.am"
     sed -i.bak 's|stats_tcp\.c|stats_tcp.c \\\n\tdarwin_stubs.c|' src/core/Makefile.am
 fi
-
-# 3e. Copie darwin_compat.h in root
-if [ ! -f darwin_compat.h ]; then
-    echo "  change: copy darwin_compat.h into the source root"
-    cp "$REPO_DIR/darwin_compat.h" darwin_compat.h
+if ! grep -q 'darwin_timerfd\.c' src/core/Makefile.am; then
+    echo "  change: add darwin_timerfd.c to src/core/Makefile.am"
+    sed -i.bak 's|darwin_stubs\.c|darwin_stubs.c \\\n\tdarwin_timerfd.c|' src/core/Makefile.am
 fi
+
+# 3e. Copy darwin_compat.h into the source root
+copy_if_changed "$REPO_DIR/darwin_compat.h" darwin_compat.h "copy darwin_compat.h into the source root"
 
 # 3f. Numbered patch series against the upstream sources
 PATCHES_DIR="$REPO_DIR/patches"
@@ -156,7 +168,7 @@ log "5. configure --prefix=$PREFIX"
 rm -f config.cache
 mkdir -p "$PREFIX"
 
-CFLAGS="-include $PWD/darwin_compat.h" ./configure \
+CFLAGS="-include $PWD/darwin_compat.h -I$PWD/include" ./configure \
     --prefix="$PREFIX" \
     --disable-doxygen --disable-pcsc --disable-systemd-logging \
     --disable-uring --disable-libmnl --disable-libsctp
@@ -171,6 +183,12 @@ make -j$(sysctl -n hw.ncpu) LDFLAGS="-Wl,-undefined,dynamic_lookup"
 log "7. make install"
 make install
 
+# The upstream header list does not know sys/timerfd.h, so install it by
+# hand for consumers that include it directly. pkg-config --cflags already
+# carries $PREFIX/include.
+mkdir -p "$PREFIX/include/sys"
+cp include/sys/timerfd.h "$PREFIX/include/sys/timerfd.h"
+
 # ---- 8. Verify ----
 log "8. Verifying the installation"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
@@ -184,8 +202,9 @@ done
 
 # ---- 9. Symbol check ----
 echo ""
-log "9. Checking the stub symbols (darwin_stubs.c)"
-for sym in osmo_tcp_stats_config osmo_stats_tcp_set_interval osmo_timerfd_disable osmo_tundev_alloc; do
+log "9. Checking the Darwin symbols (darwin_stubs.c, darwin_timerfd.c, select.c)"
+for sym in osmo_tcp_stats_config osmo_stats_tcp_set_interval osmo_tundev_alloc \
+           timerfd_create timerfd_settime timerfd_gettime osmo_timerfd_setup; do
     if nm -gU "$PREFIX/lib/libosmocore.dylib" 2>/dev/null | grep -q "_$sym\$"; then
         echo "  ok: $sym exported"
     else
