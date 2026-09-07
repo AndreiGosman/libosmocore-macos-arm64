@@ -101,6 +101,9 @@ fi
 echo "  change: wrap the Linux-only files in #ifdef __linux__"
 WRAPPED=0
 for f in $(grep -l '^#include <linux/' src/*/*.c 2>/dev/null); do
+    # tun.c and netdev.c build on Darwin since v0.2.6 (patches 009 and 010
+    # plus darwin_netdev.c); their linux/ includes are already guarded.
+    case "$f" in src/core/tun.c|src/core/netdev.c) continue ;; esac
     if [ -f "$f" ] && ! head -1 "$f" | grep -q '^#ifdef __linux__'; then
         { echo '#ifdef __linux__'; cat "$f"; echo '#endif'; } > "$f.new"
         mv "$f.new" "$f"
@@ -121,6 +124,8 @@ copy_if_changed() {
 }
 copy_if_changed "$REPO_DIR/darwin_stubs.c"   src/core/darwin_stubs.c   "add src/core/darwin_stubs.c"
 copy_if_changed "$REPO_DIR/darwin_timerfd.c" src/core/darwin_timerfd.c "add src/core/darwin_timerfd.c"
+copy_if_changed "$REPO_DIR/darwin_netdev.c"  src/core/darwin_netdev.c  "add src/core/darwin_netdev.c"
+copy_if_changed "$REPO_DIR/darwin_netdev.h"  src/core/darwin_netdev.h  "add src/core/darwin_netdev.h"
 # sys/timerfd.h has to be visible at configure time: the check for it
 # defines HAVE_SYS_TIMERFD_H, which is what compiles the timerfd wrappers in
 # src/core/select.c. include/ is already on AM_CPPFLAGS; configure gets the
@@ -135,6 +140,10 @@ fi
 if ! grep -q 'darwin_timerfd\.c' src/core/Makefile.am; then
     echo "  change: add darwin_timerfd.c to src/core/Makefile.am"
     sed -i.bak 's|darwin_stubs\.c|darwin_stubs.c \\\n\tdarwin_timerfd.c|' src/core/Makefile.am
+fi
+if ! grep -q 'darwin_netdev\.c' src/core/Makefile.am; then
+    echo "  change: add darwin_netdev.c to src/core/Makefile.am"
+    sed -i.bak 's|darwin_timerfd\.c|darwin_timerfd.c \\\n\tdarwin_netdev.c|' src/core/Makefile.am
 fi
 
 # 3e. Copy darwin_compat.h into the source root
@@ -202,8 +211,9 @@ done
 
 # ---- 9. Symbol check ----
 echo ""
-log "9. Checking the Darwin symbols (darwin_stubs.c, darwin_timerfd.c, select.c)"
+log "9. Checking the Darwin symbols (darwin_stubs.c, darwin_timerfd.c, darwin_netdev.c, tun.c)"
 for sym in osmo_tcp_stats_config osmo_stats_tcp_set_interval osmo_tundev_alloc \
+           osmo_tundev_send osmo_netdev_add_addr osmo_darwin_netdev_add_route \
            timerfd_create timerfd_settime timerfd_gettime osmo_timerfd_setup; do
     if nm -gU "$PREFIX/lib/libosmocore.dylib" 2>/dev/null | grep -q "_$sym\$"; then
         echo "  ok: $sym exported"

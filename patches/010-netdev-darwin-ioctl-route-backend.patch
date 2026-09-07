@@ -1,0 +1,85 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Mon, 7 Sep 2026 19:20:00 +0300
+Subject: [PATCH 010] netdev: Darwin backend for address, MTU, link state and routes
+
+osmo_netdev does its interface management through rtnetlink with
+libmnl, and without ENABLE_LIBMNL every operation returns -ENOTSUP.
+Darwin has no netlink; it has the BSD interface ioctls (SIOCAIFADDR,
+SIOCAIFADDR_IN6, SIOCSIFMTU, SIOCSIFFLAGS) and a PF_ROUTE socket for
+routes. Call the implementations in darwin_netdev.c from an #elif
+__APPLE__ branch in each operation. There is no link monitor, so the
+up/down and MTU callbacks fire from the setter itself once the ioctl
+succeeded. The bookkeeping (alloc, register with if_indextoname,
+netns context) is upstream code and compiles on Darwin unchanged.
+---
+diff --git a/src/core/netdev.c b/src/core/netdev.c
+index d9bc797c..a92b55cd 100644
+--- a/src/core/netdev.c
++++ b/src/core/netdev.c
+@@ -100,6 +100,9 @@
+ #include <osmocom/core/socket.h>
+ #include <osmocom/core/netns.h>
+ #include <osmocom/core/netdev.h>
++#ifdef __APPLE__
++#include "darwin_netdev.h"
++#endif
+ 
+ #if ENABLE_LIBMNL
+ #include <osmocom/core/mnl.h>
+@@ -954,6 +957,13 @@ int osmo_netdev_set_mtu(struct osmo_netdev *netdev, uint32_t mtu)
+ #if ENABLE_LIBMNL
+ 	rc = netdev_mnl_set_mtu(netdev->netns_ctx->omnl, netdev->ifindex,
+ 				netdev->dev_name, mtu);
++#elif defined(__APPLE__)
++	rc = osmo_darwin_netdev_set_mtu(netdev->dev_name, mtu);
++	if (rc == 0 && netdev->mtu_chg_cb && (!netdev->if_mtu_known || netdev->if_mtu != mtu)) {
++		netdev->if_mtu = mtu;
++		netdev->if_mtu_known = true;
++		netdev->mtu_chg_cb(netdev, mtu);
++	}
+ #else
+ 	LOGNETDEV(netdev, LOGL_ERROR, "%s: NOT SUPPORTED. Build libosmocore with --enable-libmnl.\n", __func__);
+ 	rc = -ENOTSUP;
+@@ -985,6 +995,15 @@ int osmo_netdev_ifupdown(struct osmo_netdev *netdev, bool ifupdown)
+ #if ENABLE_LIBMNL
+ 	rc = netdev_mnl_set_ifupdown(netdev->netns_ctx->omnl, netdev->ifindex,
+ 				     netdev->dev_name, ifupdown);
++#elif defined(__APPLE__)
++	rc = osmo_darwin_netdev_ifupdown(netdev->dev_name, ifupdown);
++	/* No link monitor on Darwin: report the state change right away. */
++	if (rc == 0 && (!netdev->if_up_known || netdev->if_up != ifupdown)) {
++		netdev->if_up = ifupdown;
++		netdev->if_up_known = true;
++		if (netdev->ifupdown_ind_cb)
++			netdev->ifupdown_ind_cb(netdev, ifupdown);
++	}
+ #else
+ 	LOGNETDEV(netdev, LOGL_ERROR, "%s: NOT SUPPORTED. Build libosmocore with --enable-libmnl.\n", __func__);
+ 	rc = -ENOTSUP;
+@@ -1017,6 +1036,8 @@ int osmo_netdev_add_addr(struct osmo_netdev *netdev, const struct osmo_sockaddr
+ 
+ #if ENABLE_LIBMNL
+ 	rc = netdev_mnl_add_addr(netdev->netns_ctx->omnl, netdev->ifindex, addr, prefixlen);
++#elif defined(__APPLE__)
++	rc = osmo_darwin_netdev_addr(netdev->dev_name, addr, prefixlen, true);
+ #else
+ 	LOGNETDEV(netdev, LOGL_ERROR, "%s: NOT SUPPORTED. Build libosmocore with --enable-libmnl.\n", __func__);
+ 	rc = -ENOTSUP;
+@@ -1049,6 +1070,8 @@ int osmo_netdev_del_addr(struct osmo_netdev *netdev, const struct osmo_sockaddr
+ 
+ #if ENABLE_LIBMNL
+ 	rc = netdev_mnl_del_addr(netdev->netns_ctx->omnl, netdev->ifindex, addr, prefixlen);
++#elif defined(__APPLE__)
++	rc = osmo_darwin_netdev_addr(netdev->dev_name, addr, prefixlen, false);
+ #else
+ 	LOGNETDEV(netdev, LOGL_ERROR, "%s: NOT SUPPORTED. Build libosmocore with --enable-libmnl.\n", __func__);
+ 	rc = -ENOTSUP;
+@@ -1086,6 +1109,8 @@ int osmo_netdev_add_route(struct osmo_netdev *netdev, const struct osmo_sockaddr
+ 
+ #if ENABLE_LIBMNL
+ 	rc = netdev_mnl_add_route(netdev->netns_ctx->omnl, netdev->ifindex, dst_addr, dst_prefixlen, gw_addr);
++#elif defined(__APPLE__)
++	rc = osmo_darwin_netdev_add_route(netdev->dev_name, dst_addr, dst_prefixlen, gw_addr);
+ #else
+ 	LOGNETDEV(netdev, LOGL_ERROR, "%s: NOT SUPPORTED. Build libosmocore with --enable-libmnl.\n", __func__);
+ 	rc = -ENOTSUP;

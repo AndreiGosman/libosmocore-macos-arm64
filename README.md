@@ -64,7 +64,7 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.5 or master. v0.2.1 emulates timerfd for full stats
+> **Note**: Use tag v0.2.6 or master. v0.2.1 emulates timerfd for full stats
 > support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
 > libosmo-mgcp-client need; v0.2.3 adds the second cpu-sched stub that
 > osmo-trx and osmo-bts link against; v0.2.4 makes `timerfd_settime()`
@@ -72,7 +72,8 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 > 100 % CPU after POWERON. Tag v0.2.0 is functional but disables the stats
 > subsystem. v0.1.0 remains deprecated (null dereference at daemon startup). v0.2.5 fixes the sockaddr length
 > `osmo_sock_init_osa()` passes to `bind()` and `connect()`, which osmo-pcu
-> and every other NS2 user need.
+> and every other NS2 user need; v0.2.6 gives `osmo_tundev` and `osmo_netdev`
+> a real Darwin backend (utun, ioctl, `PF_ROUTE`) for osmo-ggsn.
 
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
@@ -296,8 +297,11 @@ existing build tree is safe.
 | 006 | `src/core/socket.c` | `osmo_sock_local_ip()` connects its dummy UDP socket to port 0 to learn the local address; Darwin and the BSDs reject that with `EADDRNOTAVAIL`, so the function fails for every remote. libosmo-mgcp-client then cannot build any MGCP message with SDP, and osmo-mgw cannot pick a local RTP address | Connect to port 9 instead. No packet is sent, so the port is irrelevant to the answer; Linux behaviour is unchanged (since v0.2.2) |
 | 007 | `src/vty/cpu_sched_vty.c` | Patch 005 left out the second public function of the file, `osmo_cpu_sched_vty_apply_localthread()`, which every worker thread of osmo-trx and osmo-bts calls, so linking `osmo-trx-uhd` fails with an undefined symbol | Add it next to the no-op initialiser, returning 0 as the Linux code does when no policy matches the thread (since v0.2.3) |
 | 008 | `src/core/socket.c` | `osmo_sock_init_osa()` passes `sizeof(struct osmo_sockaddr)`, the 128 byte union, to `bind()` and `connect()`. Linux accepts a namelen longer than the family's sockaddr; Darwin and the BSDs reject it with `EINVAL`. `gprs_ns2_ip_bind()` cannot bind its NS-VC UDP socket, so osmo-pcu exits right after the INFO_IND from osmo-bts, and osmo-sgsn and osmo-gbproxy would fail the same way | Use `osmo_sockaddr_size()`, which the header already provides for `sendto()` and returns the size for the family in use; Linux behaviour is unchanged (since v0.2.5) |
+| 009 | `src/core/tun.c` | Written for the Linux tun driver: `/dev/net/tun`, `TUNSETIFF`, bare IP packets on `read()`/`write()`; Darwin has utun, a `PF_SYSTEM` control socket with a four byte address family in front of every packet | Add a utun backend next to the Linux one: connect the control socket, report the `utunN` name the kernel assigned, strip and prepend the family word with `readv()`/`writev()`; the rest of the file is unchanged and now builds on Darwin (since v0.2.6) |
+| 010 | `src/core/netdev.c` | Interface management goes through rtnetlink (libmnl); without it every operation returns `-ENOTSUP`, and Darwin has no netlink at all | `#elif __APPLE__` branches call `darwin_netdev.c`: `SIOCAIFADDR`/`SIOCAIFADDR_IN6` for addresses, `SIOCSIFMTU`, `SIOCSIFFLAGS`, and `RTM_ADD` on a `PF_ROUTE` socket for routes; up/down and MTU callbacks fire from the setters since there is no link monitor (since v0.2.6) |
 
-Patches 003, 004, 006 and 008 are not Darwin specific. All three are worth
+Patches 003, 004, 006 and 008 are not Darwin specific; 009 and 010 are
+Darwin backends and would need a BSD generalisation before going upstream. All three are worth
 sending upstream.
 
 Patch 001 and the `osmo_tcp_stats_config` fix in `darwin_stubs.c` are what
@@ -338,9 +342,16 @@ Does not affect passive RX runs.
 **Frame Relay GPRS**: `gprs_ns2_fr` wrapped out. Impact: no GPRS transport
 over Frame Relay (rarely used anyway; TCP/UDP transport works normally).
 
-**TUN device**: `osmo_tundev_*` are no-op. Impact: no TUN interface creation
-from libosmocore directly on macOS. Not needed for most Osmocom use cases
-(BTS, MSC, HLR).
+**TUN device**: since v0.2.6 `osmo_tundev_*` open a utun (`PF_SYSTEM`
+control socket, four byte family prefix handled inside) and `osmo_netdev_*`
+set addresses, MTU, link state and routes with the BSD ioctls and a
+`PF_ROUTE` socket (patches 009 and 010, `darwin_netdev.c`). Both need root,
+as on Linux. The kernel names the interface `utunN`; a requested name is
+reported back with the one assigned. There is no link monitor, so the
+up/down and MTU callbacks fire from the setters. Up to v0.2.5 these were
+no-op stubs. Verified without root: every call fails with `EPERM` and
+returns cleanly; osmo-ggsn 1.15.0 starts, rejects PDP contexts for lack of
+an interface, and answers GTP-C. A root run with an APN up is still to do.
 
 **libosmocore TCP statistics**: `osmo_stats_tcp_*` are no-op. Impact: no
 stats reporting via `stats_tcp`. Alternatives: stats via GSMTAP UDP or

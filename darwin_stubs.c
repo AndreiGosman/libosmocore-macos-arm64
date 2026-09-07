@@ -90,33 +90,9 @@ int osmo_stats_tcp_set_interval(int interval)
  * darwin_timerfd.c and the sys/timerfd.h header that install.sh provides.
  */
 
-/* ============================================================
- * From src/core/tun.c, Linux only (linux/if_tun.h)
- * ============================================================ */
-
-struct osmo_tundev *osmo_tundev_alloc(void *ctx, const char *name)
-{
-	(void)ctx;
-	(void)name;
-	return NULL;
-}
-
-void osmo_tundev_free(struct osmo_tundev *tundev)
-{
-	(void)tundev;
-}
-
-int osmo_tundev_open(struct osmo_tundev *tundev)
-{
-	(void)tundev;
-	return -1;
-}
-
-int osmo_tundev_close(struct osmo_tundev *tundev)
-{
-	(void)tundev;
-	return -1;
-}
+/* osmo_tundev_* used to be stubbed here. Since v0.2.6 src/core/tun.c and
+ * src/core/netdev.c build on Darwin with a utun and an ioctl/PF_ROUTE
+ * backend (darwin_netdev.c). */
 
 /* Add stubs for further symbols here as dyld reports "symbol not found in
  * flat namespace" at runtime. The symbols above were found one at a time,

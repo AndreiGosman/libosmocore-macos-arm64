@@ -1,0 +1,187 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Mon, 7 Sep 2026 19:20:00 +0300
+Subject: [PATCH 009] tun: open the tunnel through utun on Darwin
+
+osmo_tundev is written for the Linux tun driver: open /dev/net/tun,
+TUNSETIFF, then read() and write() bare IP packets. Darwin has utun
+instead, a PF_SYSTEM control socket connected to the com.apple.net.utun
+control, whose packets carry a four byte address family in network
+order in front of every IP packet. Add that backend next to the Linux
+one: tundev_open_fd() connects the control socket, honours a requested
+"utunN" name where it can and reports the name the kernel assigned;
+the read and write callbacks strip and prepend the family word with
+readv() and writev(), so callers keep seeing bare IP packets. The rest
+of the file (allocation, callbacks, write queue, netdev binding) is
+unchanged and now compiles on Darwin as well. HAVE_TUN_BACKEND replaces
+the HAVE_LINUX_IF_TUN_H guards around the platform code.
+
+Creating a utun needs root, the same as /dev/net/tun. osmo-ggsn is the
+first consumer in this series.
+---
+diff --git a/src/core/tun.c b/src/core/tun.c
+index 4e2a9026..ce84ac88 100644
+--- a/src/core/tun.c
++++ b/src/core/tun.c
+@@ -87,6 +87,19 @@
+ #ifdef HAVE_LINUX_IF_TUN_H
+ #include <linux/if_tun.h>
+ #endif
++#ifdef __APPLE__
++/* Darwin has no /dev/net/tun. Its utun is a PF_SYSTEM control socket whose
++ * packets carry a four byte address family prefix in network order. */
++#include <sys/kern_control.h>
++#include <sys/sys_domain.h>
++#include <sys/uio.h>
++#include <net/if_utun.h>
++#include <netinet/in.h>
++#define HAVE_TUN_BACKEND 1
++#endif
++#ifdef HAVE_LINUX_IF_TUN_H
++#define HAVE_TUN_BACKEND 1
++#endif
+ 
+ #include <osmocom/core/utils.h>
+ #include <osmocom/core/select.h>
+@@ -146,7 +159,23 @@ static int tundev_decaps(struct osmo_tundev *tundev)
+ 
+ 	msg = msgb_alloc(TUN_PACKET_MAX, "tundev_rx");
+ 
++#ifdef __APPLE__
++	{
++		uint32_t family;
++		struct iovec iov[2] = {
++			{ .iov_base = &family, .iov_len = sizeof(family) },
++			{ .iov_base = msgb_data(msg), .iov_len = TUN_PACKET_MAX },
++		};
++		rc = readv(tundev->wqueue.bfd.fd, iov, 2);
++		if (rc >= (int)sizeof(family))
++			rc -= sizeof(family);
++		else if (rc >= 0)
++			rc = 0;
++	}
++	if (rc <= 0) {
++#else
+ 	if ((rc = read(tundev->wqueue.bfd.fd, msgb_data(msg), TUN_PACKET_MAX)) <= 0) {
++#endif
+ 		LOGTUN(tundev, LOGL_ERROR, "read() failed: %s (%d)\n", strerror(errno), errno);
+ 		msgb_free(msg);
+ 		return -1;
+@@ -174,7 +203,19 @@ static int tundev_write_cb(struct osmo_fd *fd, struct msgb *msg)
+ 	size_t pkt_len = msgb_length(msg);
+ 
+ 	int rc;
++#ifdef __APPLE__
++	/* the version nibble tells utun which family prefix to send */
++	uint32_t family = pkt_len && (msgb_data(msg)[0] >> 4) == 6 ? htonl(AF_INET6) : htonl(AF_INET);
++	struct iovec iov[2] = {
++		{ .iov_base = &family, .iov_len = sizeof(family) },
++		{ .iov_base = msgb_data(msg), .iov_len = pkt_len },
++	};
++	rc = writev(tundev->wqueue.bfd.fd, iov, 2);
++	if (rc >= (int)sizeof(family))
++		rc -= sizeof(family);
++#else
+ 	rc = write(tundev->wqueue.bfd.fd, msgb_data(msg), pkt_len);
++#endif
+ 	if (rc < 0)
+ 		LOGTUN(tundev, LOGL_ERROR, "write() failed: %s (%d)\n", strerror(errno), errno);
+ 	else if (rc < pkt_len)
+@@ -263,7 +304,7 @@ void osmo_tundev_free(struct osmo_tundev *tundev)
+ 	talloc_free(tundev);
+ }
+ 
+-#ifdef HAVE_LINUX_IF_TUN_H
++#ifdef HAVE_TUN_BACKEND
+ /*! Open and configure fd of the tunnel device.
+  *  \param[in] tundev The tundev object whose tunnel interface to open
+  *  \param[in] flags internal linux flags to pass when creating the device (not used yet)
+@@ -271,6 +312,54 @@ void osmo_tundev_free(struct osmo_tundev *tundev)
+  */
+ static int tundev_open_fd(struct osmo_tundev *tundev, int flags)
+ {
++#ifdef __APPLE__
++	struct ctl_info ci;
++	struct sockaddr_ctl sc;
++	char ifname[IFNAMSIZ];
++	socklen_t nlen = sizeof(ifname);
++	unsigned int unit = 0;
++	int fd, rc;
++
++	/* utun devices are utunN; honour a requested "utunN" name, otherwise
++	 * let the kernel pick the first free unit. */
++	if (tundev->dev_name && sscanf(tundev->dev_name, "utun%u", &unit) == 1)
++		unit++;
++	else
++		unit = 0;
++
++	fd = socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
++	if (fd < 0) {
++		LOGTUN(tundev, LOGL_ERROR, "Cannot open utun control socket: %s\n", strerror(errno));
++		return fd;
++	}
++	memset(&ci, 0, sizeof(ci));
++	osmo_strlcpy(ci.ctl_name, UTUN_CONTROL_NAME, sizeof(ci.ctl_name));
++	rc = ioctl(fd, CTLIOCGINFO, &ci);
++	if (rc < 0)
++		goto close_ret;
++	memset(&sc, 0, sizeof(sc));
++	sc.sc_len = sizeof(sc);
++	sc.sc_family = AF_SYSTEM;
++	sc.ss_sysaddr = AF_SYS_CONTROL;
++	sc.sc_id = ci.ctl_id;
++	sc.sc_unit = unit;
++	rc = connect(fd, (struct sockaddr *)&sc, sizeof(sc));
++	if (rc < 0)
++		goto close_ret;
++	rc = getsockopt(fd, SYSPROTO_CONTROL, UTUN_OPT_IFNAME, ifname, &nlen);
++	if (rc < 0)
++		goto close_ret;
++	if (tundev->dev_name && strcmp(tundev->dev_name, ifname))
++		LOGTUN(tundev, LOGL_NOTICE, "Requested TUN device %s, kernel assigned %s\n",
++		       tundev->dev_name, ifname);
++	if (!tundev->dev_name || tundev->dev_name_dynamic) {
++		talloc_free(tundev->dev_name);
++		tundev->dev_name = talloc_strdup(tundev, ifname);
++		tundev->dev_name_dynamic = true;
++	} else {
++		osmo_talloc_replace_string(tundev, &tundev->dev_name, ifname);
++	}
++#else
+ 	struct ifreq ifr;
+ 	int fd, rc;
+ 
+@@ -299,6 +388,7 @@ static int tundev_open_fd(struct osmo_tundev *tundev, int flags)
+ 		tundev->dev_name = talloc_strdup(tundev, ifr.ifr_name);
+ 		tundev->dev_name_dynamic = true;
+ 	}
++#endif /* __APPLE__ */
+ 
+ 	/* Store interface index:
+ 	 * (Note: there's a potential race condition here between creating the
+@@ -336,7 +426,7 @@ close_ret:
+ 	close(fd);
+ 	return rc;
+ }
+-#endif /* HAVE_LINUX_IF_TUN_H */
++#endif /* HAVE_TUN_BACKEND */
+ 
+ /*! Open the tunnel device owned by the tundev object.
+  *  \param[in] tundev The tundev object to open
+@@ -344,7 +434,7 @@ close_ret:
+  */
+ int osmo_tundev_open(struct osmo_tundev *tundev)
+ {
+-#ifdef HAVE_LINUX_IF_TUN_H
++#ifdef HAVE_TUN_BACKEND
+ 	struct osmo_netns_switch_state switch_state;
+ 	int rc;
+ 	int netns_fd = -1;
+@@ -421,7 +511,7 @@ err_close_netns_fd:
+ 	return rc;
+ #else
+ 	return -ENOTSUP;
+-#endif /* HAVE_LINUX_IF_TUN_H */
++#endif /* HAVE_TUN_BACKEND */
+ }
+ 
+ /*! Close the tunnel device owned by the tundev object.
