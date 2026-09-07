@@ -1,0 +1,41 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Mon, 7 Sep 2026 18:05:00 +0300
+Subject: [PATCH 008] fix: osmo_sock_init_osa() passes the size of the whole union to bind() and connect()
+
+osmo_sock_init_osa() hands bind() and connect() sizeof(struct
+osmo_sockaddr), the 128 byte union, whatever the address family. Linux
+accepts a namelen longer than the family's sockaddr; Darwin and the BSDs
+reject it with EINVAL. Every caller that binds or connects through an
+osmo_sockaddr fails on Darwin: gprs_ns2_ip_bind() cannot bind its NS-VC
+UDP socket ("unable to bind socket: 0.0.0.0:23001: Invalid argument"),
+so osmo-pcu exits with "No NSVC available to connect to the SGSN" right
+after the INFO_IND from osmo-bts, and osmo-sgsn and osmo-gbproxy would
+hit the same call.
+
+Use osmo_sockaddr_size(), which the header already provides for
+sendto() and returns sizeof(struct sockaddr_in) or sockaddr_in6 by
+family. Linux behaviour is unchanged.
+---
+diff --git a/src/core/socket.c b/src/core/socket.c
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -613,7 +613,9 @@
+ 			}
+ 		}
+ 
+-		if (bind(sfd, &local->u.sa, sizeof(struct osmo_sockaddr)) == -1) {
++		/* Pass the length of the address family in use, not of the union:
++		 * Darwin and the BSDs reject a longer namelen with EINVAL. */
++		if (bind(sfd, &local->u.sa, osmo_sockaddr_size(local)) == -1) {
+ 			int err = errno;
+ 			_SOCKADDR_TO_STR(sastr, local);
+ 			LOGP(DLGLOBAL, LOGL_ERROR, "unable to bind socket: " OSMO_SOCKADDR_STR_FMT ": %s\n",
+@@ -636,7 +638,7 @@
+ 			}
+ 		}
+ 
+-		rc = connect(sfd, &remote->u.sa, sizeof(struct osmo_sockaddr));
++		rc = connect(sfd, &remote->u.sa, osmo_sockaddr_size(remote));
+ 		if (rc != 0 && errno != EINPROGRESS) {
+ 			int err = errno;
+ 			_SOCKADDR_TO_STR(sastr, remote);

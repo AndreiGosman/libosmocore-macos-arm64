@@ -64,13 +64,15 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.4 or master. v0.2.1 emulates timerfd for full stats
+> **Note**: Use tag v0.2.5 or master. v0.2.1 emulates timerfd for full stats
 > support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
 > libosmo-mgcp-client need; v0.2.3 adds the second cpu-sched stub that
 > osmo-trx and osmo-bts link against; v0.2.4 makes `timerfd_settime()`
 > reset the pending expiration count, without which osmo-trx spins at
 > 100 % CPU after POWERON. Tag v0.2.0 is functional but disables the stats
-> subsystem. v0.1.0 remains deprecated (null dereference at daemon startup).
+> subsystem. v0.1.0 remains deprecated (null dereference at daemon startup). v0.2.5 fixes the sockaddr length
+> `osmo_sock_init_osa()` passes to `bind()` and `connect()`, which osmo-pcu
+> and every other NS2 user need.
 
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
@@ -293,8 +295,9 @@ existing build tree is safe.
 | 005 | `src/vty/cpu_sched_vty.c` | Guarding the file for Linux removes `osmo_cpu_sched_vty_init()`, which every daemon calls, so linking fails | Guard it and add an `#else` no-op initialiser, leaving the `cpu-sched` node absent |
 | 006 | `src/core/socket.c` | `osmo_sock_local_ip()` connects its dummy UDP socket to port 0 to learn the local address; Darwin and the BSDs reject that with `EADDRNOTAVAIL`, so the function fails for every remote. libosmo-mgcp-client then cannot build any MGCP message with SDP, and osmo-mgw cannot pick a local RTP address | Connect to port 9 instead. No packet is sent, so the port is irrelevant to the answer; Linux behaviour is unchanged (since v0.2.2) |
 | 007 | `src/vty/cpu_sched_vty.c` | Patch 005 left out the second public function of the file, `osmo_cpu_sched_vty_apply_localthread()`, which every worker thread of osmo-trx and osmo-bts calls, so linking `osmo-trx-uhd` fails with an undefined symbol | Add it next to the no-op initialiser, returning 0 as the Linux code does when no policy matches the thread (since v0.2.3) |
+| 008 | `src/core/socket.c` | `osmo_sock_init_osa()` passes `sizeof(struct osmo_sockaddr)`, the 128 byte union, to `bind()` and `connect()`. Linux accepts a namelen longer than the family's sockaddr; Darwin and the BSDs reject it with `EINVAL`. `gprs_ns2_ip_bind()` cannot bind its NS-VC UDP socket, so osmo-pcu exits right after the INFO_IND from osmo-bts, and osmo-sgsn and osmo-gbproxy would fail the same way | Use `osmo_sockaddr_size()`, which the header already provides for `sendto()` and returns the size for the family in use; Linux behaviour is unchanged (since v0.2.5) |
 
-Patches 003, 004 and 006 are not Darwin specific. All three are worth
+Patches 003, 004, 006 and 008 are not Darwin specific. All three are worth
 sending upstream.
 
 Patch 001 and the `osmo_tcp_stats_config` fix in `darwin_stubs.c` are what
