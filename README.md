@@ -62,6 +62,9 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
+> **Note**: Use tag v0.2.0 or master. Tag v0.1.0 is deprecated due to a null
+> dereference bug at daemon startup.
+
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
 cd libosmocore-macos-arm64
