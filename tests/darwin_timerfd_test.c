@@ -150,10 +150,14 @@ static void test_disarm_and_oneshot(void)
 	CHECK(timerfd_settime(fd, 0, &spec, NULL) == 0, "settime");
 	CHECK(wait_readable(fd, 500) > 0, "no first tick");
 	read(fd, &exp, sizeof(exp));
+	/* Let a tick pile up unread, then disarm without read()ing: settime()
+	 * resets the count on Linux, so the fd must not stay readable. A
+	 * caller that disarms from its read callback (osmo-trx) spins
+	 * otherwise. */
+	CHECK(wait_readable(fd, 500) > 0, "no second tick");
 	CHECK(timerfd_settime(fd, 0, &zero, &old) == 0, "disarm");
 	CHECK(old.it_interval.tv_nsec == 30000000, "old_value interval");
-	while (read(fd, &exp, sizeof(exp)) == 8)
-		;	/* drain whatever slipped in before the disarm */
+	CHECK(read(fd, &exp, sizeof(exp)) < 0 && errno == EAGAIN, "pending count survived settime");
 	CHECK(wait_readable(fd, 150) == 0, "tick after disarm");
 	CHECK(timerfd_gettime(fd, &old) == 0 && old.it_value.tv_sec == 0 && old.it_value.tv_nsec == 0,
 	      "gettime after disarm not zero");

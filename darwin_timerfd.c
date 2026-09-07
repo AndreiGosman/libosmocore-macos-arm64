@@ -70,6 +70,7 @@
 #include <sys/timerfd.h>
 
 #include <sys/event.h>
+#include <sys/ioctl.h>
 #include <sys/time.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -275,6 +276,30 @@ static void flush_pending(struct darwin_timerfd *t)
 		t->pending = 0;
 	/* EAGAIN: keep pending. EPIPE: the reader is gone, the EOF event
 	 * follows and the worker exits. Either way there is nothing to do. */
+}
+
+/* Linux resets the expiration counter on every settime(). Here the count
+ * already handed over lives in the pipe, so drain it. The worker writes
+ * only with g_lock held, so FIONREAD is exact under the lock and the read
+ * cannot block on an empty pipe even when the caller created the timerfd
+ * without TFD_NONBLOCK. Without this, a caller that disarms or re-arms
+ * from its read callback without read()ing first (osmo-trx's rate counter
+ * timers do exactly that) sees the fd readable forever and spins. Called
+ * with g_lock held. */
+static void drain_pipe(struct darwin_timerfd *t)
+{
+	char buf[64];
+	int avail = 0;
+	ssize_t rc;
+
+	if (ioctl(t->rfd, FIONREAD, &avail) < 0)
+		return;
+	while (avail > 0) {
+		rc = read(t->rfd, buf, avail < (int)sizeof(buf) ? (size_t)avail : sizeof(buf));
+		if (rc <= 0)
+			break;
+		avail -= (int)rc;
+	}
 }
 
 static void worker_exit(struct darwin_timerfd *t)
@@ -557,6 +582,7 @@ int timerfd_settime(int fd, int flags, const struct itimerspec *new_value,
 	t->periodic = 0;
 	t->pending = 0;
 	t->gen++;
+	drain_pipe(t);
 	t->spec.it_interval = new_value->it_interval;
 
 	value_ns = ts_to_ns(&new_value->it_value);

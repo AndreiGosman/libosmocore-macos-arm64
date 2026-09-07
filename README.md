@@ -64,10 +64,12 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.3 or master. v0.2.1 emulates timerfd for full stats
+> **Note**: Use tag v0.2.4 or master. v0.2.1 emulates timerfd for full stats
 > support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
 > libosmo-mgcp-client need; v0.2.3 adds the second cpu-sched stub that
-> osmo-trx and osmo-bts link against. Tag v0.2.0 is functional but disables the stats
+> osmo-trx and osmo-bts link against; v0.2.4 makes `timerfd_settime()`
+> reset the pending expiration count, without which osmo-trx spins at
+> 100 % CPU after POWERON. Tag v0.2.0 is functional but disables the stats
 > subsystem. v0.1.0 remains deprecated (null dereference at daemon startup).
 
 ```bash
@@ -238,11 +240,20 @@ fork on Darwin while the pipe does. The last point is what keeps the stats
 timers alive after `osmo_daemonize()`.
 
 What is not emulated: `TFD_TIMER_CANCEL_ON_SET` returns `EINVAL` (Darwin
-has no notification for wall clock jumps; Osmocom does not use it). A
-`settime()` does not discard an expiration already written to the pipe but
-not yet read, where Linux resets the count; the effect is at most one extra
-tick after a reschedule. An absolute `CLOCK_REALTIME` timer is converted
-once and does not follow later clock changes. A read end inherited by
+has no notification for wall clock jumps; Osmocom does not use it). An
+absolute `CLOCK_REALTIME` timer is converted once and does not follow later
+clock changes.
+
+Since v0.2.4, `settime()` also discards an expiration already written to
+the pipe but not yet read, as Linux resets the count. Up to v0.2.3 the
+count stayed in the pipe. For `stats.c` and `rate_ctr.c`, which `read()`
+before rescheduling, that was at most one extra tick. osmo-trx's rate
+counter timers disarm from the read callback without a `read()`, so the
+descriptor stayed readable and the main thread spun at 100 % CPU from the
+first POWERON on, logging "Main thread is updating Transceiver counters"
+about 260000 times per second. The fix drains the read end under the
+global lock with `FIONREAD`; the worker only writes with that lock held,
+so the count is exact and the read cannot block. A read end inherited by
 another process delays the release of the worker until that process closes
 it too.
 
