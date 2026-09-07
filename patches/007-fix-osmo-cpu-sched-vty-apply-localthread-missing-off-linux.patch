@@ -1,0 +1,39 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Mon, 07 Sep 2026 12:45:00 +0300
+Subject: [PATCH 007] fix: provide osmo_cpu_sched_vty_apply_localthread() off Linux as well
+
+Patch 005 keeps cpu_sched_vty.c Linux only and adds a no-op
+osmo_cpu_sched_vty_init() for the daemons that call it at startup. The
+header declares a second public function, osmo_cpu_sched_vty_apply_localthread(),
+which every worker thread of osmo-trx and osmo-bts calls to pick up its
+per-thread policy from the cpu-sched node. It was left out, so linking
+osmo-trx-uhd fails:
+
+  Undefined symbols for architecture arm64:
+    "_osmo_cpu_sched_vty_apply_localthread", referenced from:
+        async_event_loop(uhd_device*) in libdevice.a(UHDDevice.o)
+        TxLowerLoopAdapter(Transceiver*) in libtransceiver_common.a(Transceiver.o)
+
+Add it next to the initialiser, returning 0. That is also what the Linux
+implementation returns when no configured policy matches the calling
+thread, so callers see the same outcome as on a Linux host with no
+cpu-sched block.
+---
+diff --git a/src/vty/cpu_sched_vty.c b/src/vty/cpu_sched_vty.c
+index cf2c18a..51d3beb 100644
+--- a/src/vty/cpu_sched_vty.c
++++ b/src/vty/cpu_sched_vty.c
+@@ -703,4 +703,13 @@ int osmo_cpu_sched_vty_init(void *tall_ctx)
+ 	return 0;
+ }
+ 
++/* Called by every thread that osmo-trx and osmo-bts start, to apply the
++ * per-thread policy from the cpu-sched node. There is no node and nothing
++ * to apply, so report success, which is also what the Linux code returns
++ * when no policy matches the thread. */
++int osmo_cpu_sched_vty_apply_localthread(void)
++{
++	return 0;
++}
++
+ #endif /* __linux__ */

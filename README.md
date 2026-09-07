@@ -64,9 +64,10 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.2 or master. v0.2.1 emulates timerfd for full stats
+> **Note**: Use tag v0.2.3 or master. v0.2.1 emulates timerfd for full stats
 > support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
-> libosmo-mgcp-client need. Tag v0.2.0 is functional but disables the stats
+> libosmo-mgcp-client need; v0.2.3 adds the second cpu-sched stub that
+> osmo-trx and osmo-bts link against. Tag v0.2.0 is functional but disables the stats
 > subsystem. v0.1.0 remains deprecated (null dereference at daemon startup).
 
 ```bash
@@ -280,6 +281,7 @@ existing build tree is safe.
 | 004 | `include/osmocom/core/stats_tcp.h` | The prototypes name `struct osmo_fd` without declaring it, giving it prototype scope and breaking any definition in the same unit | Forward declare the type in the header |
 | 005 | `src/vty/cpu_sched_vty.c` | Guarding the file for Linux removes `osmo_cpu_sched_vty_init()`, which every daemon calls, so linking fails | Guard it and add an `#else` no-op initialiser, leaving the `cpu-sched` node absent |
 | 006 | `src/core/socket.c` | `osmo_sock_local_ip()` connects its dummy UDP socket to port 0 to learn the local address; Darwin and the BSDs reject that with `EADDRNOTAVAIL`, so the function fails for every remote. libosmo-mgcp-client then cannot build any MGCP message with SDP, and osmo-mgw cannot pick a local RTP address | Connect to port 9 instead. No packet is sent, so the port is irrelevant to the answer; Linux behaviour is unchanged (since v0.2.2) |
+| 007 | `src/vty/cpu_sched_vty.c` | Patch 005 left out the second public function of the file, `osmo_cpu_sched_vty_apply_localthread()`, which every worker thread of osmo-trx and osmo-bts calls, so linking `osmo-trx-uhd` fails with an undefined symbol | Add it next to the no-op initialiser, returning 0 as the Linux code does when no policy matches the thread (since v0.2.3) |
 
 Patches 003, 004 and 006 are not Darwin specific. All three are worth
 sending upstream.
