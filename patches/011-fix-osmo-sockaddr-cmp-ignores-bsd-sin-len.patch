@@ -1,0 +1,71 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: Mon, 7 Sep 2026 19:10:00 +0300
+Subject: [PATCH 011] fix: osmo_sockaddr_cmp() compares the raw bytes of the sockaddr, including the BSD length field
+
+osmo_sockaddr_cmp() decides whether two addresses are equal with a
+memcmp() over the whole struct sockaddr_in or sockaddr_in6. On Linux the
+structure holds only family, port, address and padding, so that is
+exact. On Darwin and the BSDs the first byte is sin_len / sin6_len. The
+kernel fills it in on recvfrom() and accept(), while an address the
+application built from configuration leaves it zero, so the same peer
+compares as two different addresses.
+
+Every static NS-VC in gprs_ns2 breaks on this: the answer to the first
+NS-RESET arrives from the configured remote, gprs_ns2_udp.c cannot match
+it to the NS-VC ("Ignoring NS RESET ACK from newconnection for
+non-existing NS-VC") and the link never leaves RESET. osmo-pcu against
+osmo-sgsn shows it directly: the SGSN side, which learned the peer from
+the packet, goes to BLOCKED and then loses every NS-ALIVE-ACK; the PCU
+side stays in RESET. Dynamic NS-VCs are unaffected because their remote
+address is a copy of what recvfrom() returned.
+
+Compare the fields instead of the bytes: port and address for AF_INET,
+port, flow info, address and scope id for AF_INET6, in the order memcmp()
+visited them, so the ordering the function gives to sorted users is the
+same. Linux behaviour is unchanged.
+---
+diff --git a/src/core/socket.c b/src/core/socket.c
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -2618,11 +2618,37 @@
+ 		return OSMO_CMP(a->u.sa.sa_family, b->u.sa.sa_family);
+ 	}
+ 
++	/* Compare the address fields, not the raw bytes of the structure.
++	 * On the BSDs and Darwin the sockaddr carries a length byte (sin_len,
++	 * sin6_len) that the kernel fills in on recvfrom()/accept() and that
++	 * is zero in an address the application built itself; a memcmp() over
++	 * the whole structure then reports two equal addresses as different.
++	 * The order of the comparisons keeps the ordering memcmp() gave. */
+ 	switch (a->u.sa.sa_family) {
+-	case AF_INET:
+-		return memcmp(&a->u.sin, &b->u.sin, sizeof(struct sockaddr_in));
+-	case AF_INET6:
+-		return memcmp(&a->u.sin6, &b->u.sin6, sizeof(struct sockaddr_in6));
++	case AF_INET: {
++		int rc = memcmp(&a->u.sin.sin_port, &b->u.sin.sin_port,
++				sizeof(a->u.sin.sin_port));
++		if (rc)
++			return rc;
++		return memcmp(&a->u.sin.sin_addr, &b->u.sin.sin_addr,
++			      sizeof(a->u.sin.sin_addr));
++	}
++	case AF_INET6: {
++		int rc = memcmp(&a->u.sin6.sin6_port, &b->u.sin6.sin6_port,
++				sizeof(a->u.sin6.sin6_port));
++		if (rc)
++			return rc;
++		rc = memcmp(&a->u.sin6.sin6_flowinfo, &b->u.sin6.sin6_flowinfo,
++			    sizeof(a->u.sin6.sin6_flowinfo));
++		if (rc)
++			return rc;
++		rc = memcmp(&a->u.sin6.sin6_addr, &b->u.sin6.sin6_addr,
++			    sizeof(a->u.sin6.sin6_addr));
++		if (rc)
++			return rc;
++		return memcmp(&a->u.sin6.sin6_scope_id, &b->u.sin6.sin6_scope_id,
++			      sizeof(a->u.sin6.sin6_scope_id));
++	}
+ 	default:
+ 		/* fallback to memcmp for remaining AF over the full osmo_sockaddr length */
+ 		return memcmp(a, b, sizeof(struct osmo_sockaddr));

@@ -64,7 +64,7 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.6 or master. v0.2.1 emulates timerfd for full stats
+> **Note**: Use tag v0.2.7 or master. v0.2.1 emulates timerfd for full stats
 > support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
 > libosmo-mgcp-client need; v0.2.3 adds the second cpu-sched stub that
 > osmo-trx and osmo-bts link against; v0.2.4 makes `timerfd_settime()`
@@ -73,7 +73,9 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 > subsystem. v0.1.0 remains deprecated (null dereference at daemon startup). v0.2.5 fixes the sockaddr length
 > `osmo_sock_init_osa()` passes to `bind()` and `connect()`, which osmo-pcu
 > and every other NS2 user need; v0.2.6 gives `osmo_tundev` and `osmo_netdev`
-> a real Darwin backend (utun, ioctl, `PF_ROUTE`) for osmo-ggsn.
+> a real Darwin backend (utun, ioctl, `PF_ROUTE`) for osmo-ggsn; v0.2.7 makes
+> `osmo_sockaddr_cmp()` ignore the BSD `sin_len` byte, without which every static
+> NS-VC (osmo-pcu towards osmo-sgsn) stays in RESET.
 
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
@@ -299,10 +301,11 @@ existing build tree is safe.
 | 008 | `src/core/socket.c` | `osmo_sock_init_osa()` passes `sizeof(struct osmo_sockaddr)`, the 128 byte union, to `bind()` and `connect()`. Linux accepts a namelen longer than the family's sockaddr; Darwin and the BSDs reject it with `EINVAL`. `gprs_ns2_ip_bind()` cannot bind its NS-VC UDP socket, so osmo-pcu exits right after the INFO_IND from osmo-bts, and osmo-sgsn and osmo-gbproxy would fail the same way | Use `osmo_sockaddr_size()`, which the header already provides for `sendto()` and returns the size for the family in use; Linux behaviour is unchanged (since v0.2.5) |
 | 009 | `src/core/tun.c` | Written for the Linux tun driver: `/dev/net/tun`, `TUNSETIFF`, bare IP packets on `read()`/`write()`; Darwin has utun, a `PF_SYSTEM` control socket with a four byte address family in front of every packet | Add a utun backend next to the Linux one: connect the control socket, report the `utunN` name the kernel assigned, strip and prepend the family word with `readv()`/`writev()`; the rest of the file is unchanged and now builds on Darwin (since v0.2.6) |
 | 010 | `src/core/netdev.c` | Interface management goes through rtnetlink (libmnl); without it every operation returns `-ENOTSUP`, and Darwin has no netlink at all | `#elif __APPLE__` branches call `darwin_netdev.c`: `SIOCAIFADDR`/`SIOCAIFADDR_IN6` for addresses, `SIOCSIFMTU`, `SIOCSIFFLAGS`, and `RTM_ADD` on a `PF_ROUTE` socket for routes; up/down and MTU callbacks fire from the setters since there is no link monitor (since v0.2.6) |
+| 011 | `src/core/socket.c` | `osmo_sockaddr_cmp()` compares the whole `sockaddr_in`/`sockaddr_in6` with `memcmp()`. On Darwin and the BSDs the first byte is `sin_len`, which the kernel fills in on `recvfrom()` and which is zero in an address built from configuration, so the same peer compares as different. Every static NS-VC in `gprs_ns2` stays in RESET: the NS-RESET-ACK from the configured remote is dropped as coming from a `non-existing NS-VC` (osmo-pcu towards osmo-sgsn) | Compare the fields (port, address; for IPv6 also flow info and scope id) in the order `memcmp()` visited them, so sorted users keep their ordering; Linux behaviour is unchanged. `tests/sockaddr_cmp_test.c` reproduces it against a real `recvfrom()` (since v0.2.7) |
 
-Patches 003, 004, 006 and 008 are not Darwin specific; 009 and 010 are
-Darwin backends and would need a BSD generalisation before going upstream. All three are worth
-sending upstream.
+Patches 003, 004, 006, 008 and 011 are not Darwin specific and are worth
+sending upstream; 009 and 010 are Darwin backends and would need a BSD
+generalisation first.
 
 Patch 001 and the `osmo_tcp_stats_config` fix in `darwin_stubs.c` are what
 make a daemon such as `osmo-stp` start at all: before them it died with
@@ -326,6 +329,11 @@ nm -gU $HOME/sdr-lab/local/lib/libosmocore.dylib | grep -c timerfd
 
 # Dynamic linker check
 otool -L $HOME/sdr-lab/local/lib/libosmocore.dylib
+
+# osmo_sockaddr_cmp() against a real recvfrom() (patch 011)
+cc tests/sockaddr_cmp_test.c -o /tmp/sockaddr_cmp_test \
+   $(pkg-config --cflags --libs libosmocore) && /tmp/sockaddr_cmp_test
+# should end with PASS
 ```
 
 ## Known limitations
