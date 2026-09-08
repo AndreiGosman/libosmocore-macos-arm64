@@ -64,7 +64,7 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 
 ## Usage
 
-> **Note**: Use tag v0.2.7 or master. v0.2.1 emulates timerfd for full stats
+> **Note**: Use tag v0.2.8 or master. v0.2.1 emulates timerfd for full stats
 > support; v0.2.2 adds the `osmo_sock_local_ip()` fix that osmo-mgw and
 > libosmo-mgcp-client need; v0.2.3 adds the second cpu-sched stub that
 > osmo-trx and osmo-bts link against; v0.2.4 makes `timerfd_settime()`
@@ -75,7 +75,9 @@ Optional for gr-gsm afterward: `brew install gnuradio pybind11`, plus
 > and every other NS2 user need; v0.2.6 gives `osmo_tundev` and `osmo_netdev`
 > a real Darwin backend (utun, ioctl, `PF_ROUTE`) for osmo-ggsn; v0.2.7 makes
 > `osmo_sockaddr_cmp()` ignore the BSD `sin_len` byte, without which every static
-> NS-VC (osmo-pcu towards osmo-sgsn) stays in RESET.
+> NS-VC (osmo-pcu towards osmo-sgsn) stays in RESET. v0.2.8 gives a point-to-point
+> interface (utun) its destination address and the route to the address prefix, without
+> which osmo-ggsn cannot configure its APN tun as root.
 
 ```bash
 git clone https://github.com/AndreiGosman/libosmocore-macos-arm64.git
@@ -300,7 +302,7 @@ existing build tree is safe.
 | 007 | `src/vty/cpu_sched_vty.c` | Patch 005 left out the second public function of the file, `osmo_cpu_sched_vty_apply_localthread()`, which every worker thread of osmo-trx and osmo-bts calls, so linking `osmo-trx-uhd` fails with an undefined symbol | Add it next to the no-op initialiser, returning 0 as the Linux code does when no policy matches the thread (since v0.2.3) |
 | 008 | `src/core/socket.c` | `osmo_sock_init_osa()` passes `sizeof(struct osmo_sockaddr)`, the 128 byte union, to `bind()` and `connect()`. Linux accepts a namelen longer than the family's sockaddr; Darwin and the BSDs reject it with `EINVAL`. `gprs_ns2_ip_bind()` cannot bind its NS-VC UDP socket, so osmo-pcu exits right after the INFO_IND from osmo-bts, and osmo-sgsn and osmo-gbproxy would fail the same way | Use `osmo_sockaddr_size()`, which the header already provides for `sendto()` and returns the size for the family in use; Linux behaviour is unchanged (since v0.2.5) |
 | 009 | `src/core/tun.c` | Written for the Linux tun driver: `/dev/net/tun`, `TUNSETIFF`, bare IP packets on `read()`/`write()`; Darwin has utun, a `PF_SYSTEM` control socket with a four byte address family in front of every packet | Add a utun backend next to the Linux one: connect the control socket, report the `utunN` name the kernel assigned, strip and prepend the family word with `readv()`/`writev()`; the rest of the file is unchanged and now builds on Darwin (since v0.2.6) |
-| 010 | `src/core/netdev.c` | Interface management goes through rtnetlink (libmnl); without it every operation returns `-ENOTSUP`, and Darwin has no netlink at all | `#elif __APPLE__` branches call `darwin_netdev.c`: `SIOCAIFADDR`/`SIOCAIFADDR_IN6` for addresses, `SIOCSIFMTU`, `SIOCSIFFLAGS`, and `RTM_ADD` on a `PF_ROUTE` socket for routes; up/down and MTU callbacks fire from the setters since there is no link monitor (since v0.2.6) |
+| 010 | `src/core/netdev.c` | Interface management goes through rtnetlink (libmnl); without it every operation returns `-ENOTSUP`, and Darwin has no netlink at all | `#elif __APPLE__` branches call `darwin_netdev.c`: `SIOCAIFADDR`/`SIOCAIFADDR_IN6` for addresses, `SIOCSIFMTU`, `SIOCSIFFLAGS`, and `RTM_ADD` on a `PF_ROUTE` socket for routes; up/down and MTU callbacks fire from the setters since there is no link monitor (since v0.2.6). Since v0.2.8 an IPv4 address on a point-to-point interface carries the destination address that `SIOCAIFADDR` requires there (EDESTADDRREQ otherwise) and the route to the address prefix is added through the interface, as Linux derives it from the address; first exercised by osmo-ggsn as root: utun6 with 10.45.0.1/16, route `10.45/16 link#24`, PDP context accepted |
 | 011 | `src/core/socket.c` | `osmo_sockaddr_cmp()` compares the whole `sockaddr_in`/`sockaddr_in6` with `memcmp()`. On Darwin and the BSDs the first byte is `sin_len`, which the kernel fills in on `recvfrom()` and which is zero in an address built from configuration, so the same peer compares as different. Every static NS-VC in `gprs_ns2` stays in RESET: the NS-RESET-ACK from the configured remote is dropped as coming from a `non-existing NS-VC` (osmo-pcu towards osmo-sgsn) | Compare the fields (port, address; for IPv6 also flow info and scope id) in the order `memcmp()` visited them, so sorted users keep their ordering; Linux behaviour is unchanged. `tests/sockaddr_cmp_test.c` reproduces it against a real `recvfrom()` (since v0.2.7) |
 
 Patches 003, 004, 006, 008 and 011 are not Darwin specific and are worth
@@ -356,7 +358,7 @@ set addresses, MTU, link state and routes with the BSD ioctls and a
 `PF_ROUTE` socket (patches 009 and 010, `darwin_netdev.c`). Both need root,
 as on Linux. The kernel names the interface `utunN`; a requested name is
 reported back with the one assigned. There is no link monitor, so the
-up/down and MTU callbacks fire from the setters. Up to v0.2.5 these were
+up/down and MTU callbacks fire from the setters. Verified as root with osmo-ggsn since v0.2.8 (address, route, MTU, up); still open: no IPv6 link-local address is set on a utun, so an IPv6 or dual-stack APN of osmo-ggsn fails with "tun interface has no link-local IP assigned", and osmo-ggsn looks up the interface addresses under its configured tun name (`tun4`) while the kernel named it `utunN`, so the pool blacklist misses the tun address and the first UE gets the GGSN's own address. Up to v0.2.5 these were
 no-op stubs. Verified without root: every call fails with `EPERM` and
 returns cleanly; osmo-ggsn 1.15.0 starts, rejects PDP contexts for lack of
 an interface, and answers GTP-C. A root run with an APN up is still to do.
