@@ -51,8 +51,36 @@ static void mask_from_prefix6(struct sockaddr_in6 *sin6, uint8_t prefixlen)
 		sin6->sin6_addr.s6_addr[i] = prefixlen >= 8 ? 0xff : (uint8_t)(0xff << (8 - prefixlen));
 }
 
-/* Add or delete an address on the interface named dev_name. A point to
- * point tun has no broadcast address; the destination is left unset. */
+/* SIOCGIFFLAGS: the interface flags, or a negative errno */
+static int iface_flags(const char *dev_name, short *flags)
+{
+	struct ifreq ifr;
+	int fd, rc;
+
+	fd = ctl_socket(AF_INET);
+	if (fd < 0)
+		return fd;
+	memset(&ifr, 0, sizeof(ifr));
+	strlcpy(ifr.ifr_name, dev_name, sizeof(ifr.ifr_name));
+	rc = ioctl(fd, SIOCGIFFLAGS, &ifr) < 0 ? -errno : 0;
+	close(fd);
+	if (rc == 0)
+		*flags = ifr.ifr_flags;
+	return rc;
+}
+
+/* Add or delete an address on the interface named dev_name.
+ *
+ * A utun is a point to point interface, and the BSD SIOCAIFADDR refuses an
+ * address on a point to point interface without a destination address
+ * (EDESTADDRREQ). Set the destination to the address itself, which is what
+ * "ifconfig utunN inet A A netmask M" does and what VPN clients do on utun.
+ *
+ * On Linux an address with a prefix length also brings the route to that
+ * prefix; on Darwin a point to point address only brings the host route to
+ * the destination. Add the prefix route through the interface after the
+ * address, so that the interface behaves as callers written for Linux
+ * expect (osmo-ggsn routes the whole pool of an APN into its tun). */
 int osmo_darwin_netdev_addr(const char *dev_name, const struct osmo_sockaddr *addr, uint8_t prefixlen, bool add)
 {
 	int fd, rc;
@@ -60,15 +88,42 @@ int osmo_darwin_netdev_addr(const char *dev_name, const struct osmo_sockaddr *ad
 	switch (addr->u.sa.sa_family) {
 	case AF_INET: {
 		struct ifaliasreq ifra;
+		short flags = 0;
+		bool p2p;
+
+		rc = iface_flags(dev_name, &flags);
+		if (rc < 0)
+			return rc;
+		p2p = (flags & IFF_POINTOPOINT) != 0;
+
 		memset(&ifra, 0, sizeof(ifra));
 		strlcpy(ifra.ifra_name, dev_name, sizeof(ifra.ifra_name));
 		memcpy(&ifra.ifra_addr, &addr->u.sin, sizeof(struct sockaddr_in));
 		((struct sockaddr_in *)&ifra.ifra_addr)->sin_len = sizeof(struct sockaddr_in);
 		mask_from_prefix4((struct sockaddr_in *)&ifra.ifra_mask, prefixlen);
+		/* the slot is ifra_broadaddr; the kernel reads it as the
+		 * destination on a point to point interface (Darwin's net/if.h
+		 * has no ifra_dstaddr alias for it, unlike FreeBSD) */
+		if (p2p)
+			memcpy(&ifra.ifra_broadaddr, &ifra.ifra_addr, sizeof(struct sockaddr_in));
 		fd = ctl_socket(AF_INET);
 		if (fd < 0)
 			return fd;
 		rc = ioctl(fd, add ? SIOCAIFADDR : SIOCDIFADDR, &ifra);
+		if (rc == 0 && add && p2p && prefixlen < 32) {
+			struct osmo_sockaddr net;
+			int rc2;
+
+			memset(&net, 0, sizeof(net));
+			net.u.sin.sin_family = AF_INET;
+			net.u.sin.sin_addr.s_addr = addr->u.sin.sin_addr.s_addr &
+				((struct sockaddr_in *)&ifra.ifra_mask)->sin_addr.s_addr;
+			rc2 = osmo_darwin_netdev_add_route(dev_name, &net, prefixlen, NULL);
+			if (rc2 < 0 && rc2 != -EEXIST) {
+				close(fd);
+				return rc2;
+			}
+		}
 		break;
 	}
 	case AF_INET6: {
